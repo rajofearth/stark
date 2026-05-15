@@ -6,6 +6,15 @@ export interface BlockerRef {
   state: string | null;
 }
 
+export interface CommentReplyTrigger {
+  replyCommentId: string;
+  replyBody: string;
+  replyAuthorName: string | null;
+  replyCreatedAt: string;
+  parentCommentId: string;
+  parentBody: string;
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -21,6 +30,7 @@ export interface Issue {
   updatedAt: Date | null;
   assigneeId?: string | null;
   assignedToWorker?: boolean;
+  commentReply?: CommentReplyTrigger;
 }
 
 export interface WorkflowDefinition {
@@ -37,6 +47,7 @@ export interface TrackerConfig {
   assignee: string | null;
   activeStates: string[];
   terminalStates: string[];
+  commentReplyStates: string[];
 }
 
 export interface LinearSubagentDef {
@@ -163,4 +174,5 @@ export interface RunningEntry {
   turnCount: number;
   workerHost: WorkerHost;
   workspacePath: string | null;
+  commentReplyRun?: boolean;
 }

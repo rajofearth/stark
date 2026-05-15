@@ -7,7 +7,7 @@ import {
   sortIssuesForDispatch,
   summarizeRuntimePayload,
 } from "../src/orchestrator.js";
-import { normalizeIssueState } from "../src/config/schema.js";
+import { isTerminalIssueState, normalizeIssueState } from "../src/config/schema.js";
 import { MemoryTracker } from "../src/tracker/index.js";
 import type { Issue } from "../src/types.js";
 
@@ -39,6 +39,12 @@ describe("tracker and orchestration helpers", () => {
       toolName: "linear_graphql",
       args: { query: "query Viewer { viewer { id } }" },
     });
+  });
+
+  test("isTerminalIssueState recognizes configured terminal states", () => {
+    expect(isTerminalIssueState("Done", ["Done", "Canceled"])).toBe(true);
+    expect(isTerminalIssueState("In Progress", ["Done", "Canceled"])).toBe(false);
+    expect(isTerminalIssueState("Todo", ["Done"])).toBe(false);
   });
 
   test("explains why an issue is not dispatchable", () => {

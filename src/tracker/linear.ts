@@ -1,6 +1,15 @@
 import type { Issue, Settings } from "../types.js";
+import {
+  commentWatchQuery,
+  findReplyToBotComment,
+  latestCommentId,
+  normalizeLinearComments,
+  type CommentPollResult,
+  type IssueWithCommentReply,
+} from "./linearComments.js";
 
 const ISSUE_PAGE_SIZE = 50;
+const COMMENT_PAGE_SIZE = 100;
 const QUERY = `
 query StarkLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
   issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
@@ -16,6 +25,8 @@ query StarkLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: In
     pageInfo { hasNextPage endCursor }
   }
 }`;
+
+const VIEWER_QUERY = `query StarkViewer { viewer { id } }`;
 
 const QUERY_BY_IDS = `
 query StarkLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
@@ -36,10 +47,17 @@ export interface TrackerAdapter {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
   fetchIssueStatesByIds(issueIds: string[]): Promise<Issue[]>;
+  fetchCommentReplyCandidates(
+    stateNameOverride: string[] | null,
+    commentCursors: ReadonlyMap<string, string>,
+  ): Promise<CommentPollResult>;
   graphql(query: string, variables?: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class LinearClient implements TrackerAdapter {
+  private authenticatedUserId: string | null = null;
+  private authenticatedUserIdPromise: Promise<string | null> | null = null;
+
   constructor(private readonly settingsProvider: () => Settings) {}
 
   async fetchCandidateIssues(): Promise<Issue[]> {
@@ -58,6 +76,57 @@ export class LinearClient implements TrackerAdapter {
     const tracker = this.settingsProvider().tracker;
     requireLinearConfig(tracker.apiKey, tracker.projectSlug);
     return this.fetchByStates(tracker.projectSlug!, uniqueStates, null);
+  }
+
+  async fetchCommentReplyCandidates(
+    stateNameOverride: string[] | null,
+    commentCursors: ReadonlyMap<string, string>,
+  ): Promise<CommentPollResult> {
+    const tracker = this.settingsProvider().tracker;
+    requireLinearConfig(tracker.apiKey, tracker.projectSlug);
+    const botUserId = await this.resolveAuthenticatedUserId();
+    if (!botUserId) return { baselines: [], replies: [] };
+    const override =
+      stateNameOverride && stateNameOverride.length > 0
+        ? [...new Set(stateNameOverride.map(String))]
+        : null;
+    const { query, variables: watchVariables } = commentWatchQuery(override);
+    const assigneeFilter = await this.assigneeFilter();
+    let after: string | null = null;
+    const baselines: CommentPollResult["baselines"] = [];
+    const replies: IssueWithCommentReply[] = [];
+    do {
+      const body = await this.graphql(query, {
+        projectSlug: tracker.projectSlug,
+        ...watchVariables,
+        first: ISSUE_PAGE_SIZE,
+        commentsFirst: COMMENT_PAGE_SIZE,
+        after,
+      });
+      const page = getPath<Record<string, unknown>>(body, ["data", "issues"]);
+      const nodes = Array.isArray(page?.nodes) ? page.nodes : [];
+      for (const node of nodes) {
+        const issue = normalizeIssue(node, assigneeFilter);
+        if (!issue || issue.assignedToWorker === false) continue;
+        const comments = normalizeLinearComments(node);
+        if (!commentCursors.has(issue.id)) {
+          const cursorCommentId = latestCommentId(comments);
+          if (cursorCommentId) baselines.push({ issueId: issue.id, cursorCommentId });
+          continue;
+        }
+        const trigger = findReplyToBotComment(comments, botUserId, commentCursors.get(issue.id)!);
+        if (!trigger) continue;
+        replies.push({ issue: { ...issue, commentReply: trigger }, trigger });
+      }
+      const pageInfo = page?.pageInfo as Record<string, unknown> | undefined;
+      if (pageInfo?.hasNextPage === true) {
+        if (typeof pageInfo.endCursor !== "string") throw new Error("linear_missing_end_cursor");
+        after = pageInfo.endCursor;
+      } else {
+        after = null;
+      }
+    } while (after);
+    return { baselines, replies };
   }
 
   async fetchIssueStatesByIds(issueIds: string[]): Promise<Issue[]> {
@@ -138,6 +207,25 @@ export class LinearClient implements TrackerAdapter {
   private async assigneeFilter(): Promise<string | null> {
     return this.settingsProvider().tracker.assignee;
   }
+
+  /** Linear user ID for the API token (who posts comments as the agent). */
+  async resolveAuthenticatedUserId(): Promise<string | null> {
+    if (this.authenticatedUserId) return this.authenticatedUserId;
+    if (!this.authenticatedUserIdPromise) {
+      this.authenticatedUserIdPromise = this.fetchAuthenticatedUserId();
+    }
+    this.authenticatedUserId = await this.authenticatedUserIdPromise;
+    return this.authenticatedUserId;
+  }
+
+  private async fetchAuthenticatedUserId(): Promise<string | null> {
+    try {
+      const body = await this.graphql(VIEWER_QUERY);
+      return stringOrNull(getPath(body, ["data", "viewer", "id"]));
+    } catch {
+      return null;
+    }
+  }
 }
 
 export class MemoryTracker implements TrackerAdapter {
@@ -159,6 +247,13 @@ export class MemoryTracker implements TrackerAdapter {
   async fetchIssueStatesByIds(issueIds: string[]): Promise<Issue[]> {
     const ids = new Set(issueIds);
     return this.issues.filter((issue) => ids.has(issue.id));
+  }
+
+  async fetchCommentReplyCandidates(
+    _stateNameOverride: string[] | null,
+    _commentCursors: ReadonlyMap<string, string>,
+  ): Promise<CommentPollResult> {
+    return { baselines: [], replies: [] };
   }
 
   async graphql(): Promise<Record<string, unknown>> {

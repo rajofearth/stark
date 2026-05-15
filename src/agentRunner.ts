@@ -5,7 +5,7 @@ import type { WorkflowStore } from "./workflow/workflow.js";
 import type { CodexAppServer } from "./codex/appServer.js";
 import type { Logger } from "./logging/logger.js";
 import { buildPrompt, type PromptContext } from "./promptBuilder.js";
-import { normalizeIssueState } from "./config/schema.js";
+import { isTerminalIssueState, normalizeIssueState } from "./config/schema.js";
 import { buildContinuationPrompt } from "./workflow/linearOrchestration.js";
 import type { TaskKind } from "./types.js";
 
@@ -26,6 +26,7 @@ export class AgentRunner {
       workerHost: WorkerHost;
       refreshIssueAfterTurn?: boolean;
       taskKind?: TaskKind;
+      commentReply?: boolean;
       signal: AbortSignal;
       onEvent: (event: RuntimeEvent) => void;
       onRuntimeInfo: (info: { workerHost: WorkerHost; workspacePath: string }) => void;
@@ -50,6 +51,7 @@ export class AgentRunner {
         options.onEvent,
         options.refreshIssueAfterTurn ?? true,
         options.taskKind ?? "linear",
+        options.commentReply ?? false,
       );
     } finally {
       await this.workspaceManager.runAfterRun(workspace.path, issue, workerHost);
@@ -65,17 +67,21 @@ export class AgentRunner {
     onEvent: (event: RuntimeEvent) => void,
     refreshIssueAfterTurn: boolean,
     taskKind: TaskKind,
+    commentReply: boolean,
   ): Promise<Issue> {
     const session = await this.codex.startSession(workspacePath, workerHost);
     const settings = this.settingsProvider();
     const promptContext: PromptContext = {
       taskKind,
       linearOrchestration: settings.agent.linearOrchestration,
+      commentReply: commentReply ? initialIssue.commentReply : null,
     };
     try {
       let issue = initialIssue;
-      if (!this.isRunnable(issue.state)) return issue;
-      const maxTurns = settings.agent.maxTurns;
+      if (!this.isRunnable(issue.state, commentReply)) return issue;
+      const maxTurns = commentReply
+        ? Math.min(settings.agent.maxTurns, 3)
+        : settings.agent.maxTurns;
       for (let turn = 1; turn <= maxTurns; turn += 1) {
         if (signal.aborted) throw new Error("worker_cancelled");
         const prompt =
@@ -87,14 +93,16 @@ export class AgentRunner {
                 turn,
                 maxTurns,
                 settings.agent.linearOrchestration,
+                commentReply,
               );
         await this.codex.runTurn(session, prompt, issue, onEvent);
+        if (commentReply) return issue;
         if (!refreshIssueAfterTurn) {
           return { ...issue, state: "Human Review", updatedAt: new Date() };
         }
         const refreshed = await this.tracker.fetchIssueStatesByIds([issue.id]);
         issue = refreshed[0] ?? issue;
-        if (!this.isRunnable(issue.state)) return issue;
+        if (!this.isRunnable(issue.state, false)) return issue;
       }
       this.logger.info("Reached agent.max_turns with issue still active", {
         issue_id: issue.id,
@@ -107,7 +115,11 @@ export class AgentRunner {
     }
   }
 
-  private isRunnable(state: string): boolean {
+  private isRunnable(state: string, commentReply: boolean): boolean {
+    if (commentReply) {
+      const settings = this.settingsProvider();
+      return !isTerminalIssueState(state, settings.tracker.terminalStates);
+    }
     const active = new Set(this.settingsProvider().tracker.activeStates.map(normalizeIssueState));
     const normalized = normalizeIssueState(state);
     return active.has(normalized) && !isHumanReviewState(normalized);

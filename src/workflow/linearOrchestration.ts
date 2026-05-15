@@ -132,7 +132,17 @@ export function buildContinuationPrompt(
   turn: number,
   maxTurns: number,
   settings: LinearOrchestrationSettings,
+  commentReply = false,
 ): string {
+  if (commentReply) {
+    return [
+      "Continuation guidance:",
+      "",
+      "- Finish addressing the human's reply and post a new comment via commentCreate (parentId = their reply id).",
+      "- Do not commentUpdate the workpad or existing comments for this conversation.",
+      "- Do not change issue state unless clearly required.",
+    ].join("\n");
+  }
   const base = [
     "Continuation guidance:",
     "",

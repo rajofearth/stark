@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { parseSettings } from "../src/config/schema.js";
-import { buildPrompt } from "../src/promptBuilder.js";
+import { buildPrompt, renderCommentReplyPrompt } from "../src/promptBuilder.js";
 import {
   buildContinuationPrompt,
   DEFAULT_LINEAR_ORCHESTRATION,
@@ -109,6 +109,22 @@ describe("promptBuilder linear orchestration", () => {
     expect(continuation).toContain("PR");
     expect(continuation).toContain("Linear");
     expect(continuation).toContain("Merging");
+  });
+
+  test("comment reply prompt requires commentCreate and forbids workpad edit", () => {
+    const prompt = renderCommentReplyPrompt(baseIssue, {
+      replyCommentId: "reply-1",
+      replyBody: "Please clarify",
+      replyAuthorName: "Alex",
+      replyCreatedAt: "2026-01-01T12:00:00.000Z",
+      parentCommentId: "parent-1",
+      parentBody: "Here is the plan",
+    });
+    expect(prompt).toContain("commentCreate");
+    expect(prompt).toContain("reply-1");
+    expect(prompt).toContain("issue-1");
+    expect(prompt).toContain("Do **not** use `commentUpdate`");
+    expect(prompt).toContain("new threaded comment");
   });
 
   test("adhoc continuation stays generic", () => {

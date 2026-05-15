@@ -68,6 +68,7 @@ export class Orchestrator extends EventEmitter {
   private adHocQueue: Array<{ issue: Issue; metadata: AdHocIssueMetadata }> = [];
   private adHocIssues = new Map<string, { issue: Issue; metadata: AdHocIssueMetadata }>();
   private lastPoll: LastPollSnapshot = { at: null, error: null, candidates: [] };
+  private commentCursors = new Map<string, string>();
 
   constructor(
     private settingsProvider: () => Settings,
@@ -271,6 +272,7 @@ export class Orchestrator extends EventEmitter {
         if (this.availableSlots() <= 0) break;
         if (this.shouldDispatch(issue)) this.dispatchIssue(issue, null, null);
       }
+      await this.pollCommentReplies();
       this.lastPoll = {
         at: new Date().toISOString(),
         error: null,
@@ -299,10 +301,49 @@ export class Orchestrator extends EventEmitter {
     }
   }
 
+  private async pollCommentReplies(): Promise<void> {
+    const settings = this.settingsProvider();
+    if (settings.tracker.kind !== "linear") return;
+    const stateOverride =
+      settings.tracker.commentReplyStates.length > 0 ? settings.tracker.commentReplyStates : null;
+    try {
+      const { baselines, replies } = await this.tracker.fetchCommentReplyCandidates(
+        stateOverride,
+        this.commentCursors,
+      );
+      for (const baseline of baselines) {
+        if (!this.commentCursors.has(baseline.issueId)) {
+          this.commentCursors.set(baseline.issueId, baseline.cursorCommentId);
+        }
+      }
+      for (const { issue } of replies) {
+        if (this.availableSlots() <= 0) break;
+        if (!this.shouldDispatchCommentReply(issue)) continue;
+        this.dispatchIssue(issue, null, null, true);
+      }
+    } catch (reason) {
+      this.logger.warn("Comment reply poll failed", {
+        reason: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+
+  private shouldDispatchCommentReply(issue: Issue): boolean {
+    if (!issue.commentReply) return false;
+    return (
+      !this.claimed.has(issue.id) &&
+      !this.running.has(issue.id) &&
+      issue.assignedToWorker !== false &&
+      this.availableSlots() > 0 &&
+      this.selectWorkerHost(null) !== "no_worker_capacity"
+    );
+  }
+
   private dispatchIssue(
     issue: Issue,
     attempt: number | null,
     preferredWorkerHost: WorkerHost,
+    commentReplyRun = false,
   ): void {
     if (this.claimed.has(issue.id) || this.running.has(issue.id)) return;
     const workerHost = this.selectWorkerHost(preferredWorkerHost);
@@ -331,6 +372,7 @@ export class Orchestrator extends EventEmitter {
       turnCount: 0,
       workerHost: workerHost === null ? null : workerHost,
       workspacePath: null,
+      commentReplyRun,
     };
     this.running.set(issue.id, entry);
     this.claimed.add(issue.id);
@@ -343,6 +385,7 @@ export class Orchestrator extends EventEmitter {
         workerHost: workerHost === null ? null : workerHost,
         refreshIssueAfterTurn: !this.adHocIssues.has(issue.id),
         taskKind: this.adHocIssues.has(issue.id) ? "adhoc" : "linear",
+        commentReply: commentReplyRun,
         signal: abortController.signal,
         onRuntimeInfo: (info) => {
           const current = this.running.get(issue.id);
@@ -368,9 +411,11 @@ export class Orchestrator extends EventEmitter {
       worker_host: workerHost ?? "local",
     });
     this.recordEvent(
-      "dispatch",
+      commentReplyRun ? "comment_reply_dispatch" : "dispatch",
       issue,
-      `Dispatched ${issue.identifier} to ${workerHost ?? "local"}`,
+      commentReplyRun
+        ? `Dispatched ${issue.identifier} for comment reply`
+        : `Dispatched ${issue.identifier} to ${workerHost ?? "local"}`,
       {
         workerHost: workerHost === null ? null : workerHost,
       },
@@ -383,9 +428,14 @@ export class Orchestrator extends EventEmitter {
     if (finalIssue) entry.issue = finalIssue;
     this.recordSessionCompletionTotals(entry);
     this.running.delete(issueId);
+    if (entry.commentReplyRun && entry.issue.commentReply) {
+      this.commentCursors.set(issueId, entry.issue.commentReply.replyCommentId);
+    }
     if (reason === "normal") {
       this.completed.add(issueId);
-      if (this.shouldContinueAfterWorkerExit(entry.issue)) {
+      if (entry.commentReplyRun) {
+        this.claimed.delete(issueId);
+      } else if (this.shouldContinueAfterWorkerExit(entry.issue)) {
         this.scheduleIssueRetry(issueId, 1, {
           identifier: entry.identifier,
           delayType: "continuation",
@@ -434,8 +484,10 @@ export class Orchestrator extends EventEmitter {
     const visible = new Set(issues.map((issue) => issue.id));
     for (const issue of issues) {
       if (this.isTerminal(issue.state)) await this.terminateRunningIssue(issue.id, true);
-      else if (this.isHumanReview(issue.state)) await this.terminateRunningIssue(issue.id, false);
-      else if (!issue.assignedToWorker) await this.terminateRunningIssue(issue.id, false);
+      else if (this.isHumanReview(issue.state)) {
+        const entry = this.running.get(issue.id);
+        if (!entry?.commentReplyRun) await this.terminateRunningIssue(issue.id, false);
+      } else if (!issue.assignedToWorker) await this.terminateRunningIssue(issue.id, false);
       else if (this.isActive(issue.state)) {
         const entry = this.running.get(issue.id);
         if (entry) entry.issue = issue;

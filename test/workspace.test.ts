@@ -37,6 +37,7 @@ function baseSettings(root: string): Settings {
       assignee: null,
       activeStates: ["Todo"],
       terminalStates: ["Done"],
+      commentReplyStates: [],
     },
     polling: { intervalMs: 1000 },
     workspace: { root },

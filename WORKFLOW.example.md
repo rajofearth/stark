@@ -115,3 +115,9 @@ When `task_kind` is `linear`, you are the **orchestrator**. Spawn Codex subagent
 | **Merging**     | Coder (PR focus)                                                  | PR link in Linear comment                         |
 
 Anti-patterns: do not skip QA before Human Review without cause; do not open a PR in Todo; do not apply this playbook to Slack or `SLACK-*` tasks.
+
+## Comment replies (all non-terminal states)
+
+Stark polls every non-terminal issue for humans replying in-thread to the API token user's comments. The agent must post a **new** `commentCreate` reply (`parentId` = the human's comment)—not edit the workpad or use `commentUpdate` for chat.
+
+Optional `comment_reply_states` in tracker config narrows watch to specific state names only; omit it to watch all non-terminal issues.

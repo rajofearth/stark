@@ -18,6 +18,7 @@ const rawConfigSchema = z
         assignee: z.string().nullable().optional(),
         active_states: stringArray.optional(),
         terminal_states: stringArray.optional(),
+        comment_reply_states: stringArray.optional(),
       })
       .passthrough()
       .optional(),
@@ -161,6 +162,7 @@ export function parseSettings(
         "Duplicate",
         "Done",
       ],
+      commentReplyStates: tracker.comment_reply_states ?? [],
     },
     polling: { intervalMs: polling.interval_ms ?? 30_000 },
     workspace: {
@@ -281,6 +283,11 @@ export function validateDispatchSettings(settings: Settings): void {
 
 export function normalizeIssueState(stateName: string): string {
   return stateName.trim().toLowerCase();
+}
+
+export function isTerminalIssueState(state: string, terminalStates: string[]): boolean {
+  const normalized = normalizeIssueState(state);
+  return new Set(terminalStates.map(normalizeIssueState)).has(normalized);
 }
 
 export function runtimeTurnSandboxPolicy(
