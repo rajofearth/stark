@@ -1,0 +1,47 @@
+{
+  "name": "stark",
+  "version": "1.0.0",
+  "description": "S.T.A.R.K - System for Task Automation, Reasoning & Knowledge",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "stark": "dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check .",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run test",
+    "coverage": "vitest run test --coverage",
+    "e2e": "STARK_RUN_LIVE_E2E=1 vitest run test/live-e2e.test.ts",
+    "all": "npm run build && npm run fmt:check && npm run lint && npm test"
+  },
+  "keywords": [
+    "automation",
+    "agents",
+    "linear",
+    "codex"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@types/node": "^25.8.0",
+    "chokidar": "^5.0.0",
+    "commander": "^14.0.3",
+    "express": "^5.2.1",
+    "liquidjs": "^10.26.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
+    "tsx": "^4.22.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
