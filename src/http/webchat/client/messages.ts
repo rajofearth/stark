@@ -13,7 +13,7 @@ function buildAnchor(label, href, download) {
   return \`<a class="md-link" href="\${attr(safeHref)}"\${attrs}>\${esc(label || safeHref)}</a>\`;
 }
 function buildFileAnchor(path) {
-  return buildAnchor(fileNameFromPath(path) + ' ↧', fileUrl(path), true);
+  return buildAnchor(fileNameFromPath(path) + ' ↗', fileUrl(path), false);
 }
 
 /* ─── Syntax highlighter ────────────────────────────────────────────────── */

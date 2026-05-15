@@ -18,6 +18,21 @@ export interface CodexSession {
   turnSandboxPolicy: Record<string, unknown>;
 }
 
+export interface CodexThreadListOptions {
+  cursor?: string | null;
+  limit?: number;
+  cwd?: string;
+  sourceKinds?: string[];
+  sortKey?: "created_at" | "updated_at";
+  archived?: boolean;
+  searchTerm?: string;
+}
+
+export interface CodexThreadListResult {
+  data: Array<Record<string, unknown>>;
+  nextCursor: string | null;
+}
+
 export class CodexAppServer {
   private requestId = 1;
 
@@ -154,9 +169,77 @@ export class CodexAppServer {
     return { sessionId, threadId: session.threadId, turnId };
   }
 
+  async listThreads(
+    workspace: string,
+    options: CodexThreadListOptions = {},
+    workerHost: WorkerHost = null,
+  ): Promise<CodexThreadListResult> {
+    return this.withInitializedProcess(workspace, workerHost, async (process, reader) => {
+      const params: Record<string, unknown> = {
+        limit: options.limit ?? 50,
+        sortKey: options.sortKey ?? "updated_at",
+        archived: options.archived ?? false,
+      };
+      if (options.cursor) params.cursor = options.cursor;
+      if (options.cwd) params.cwd = options.cwd;
+      if (options.sourceKinds && options.sourceKinds.length > 0)
+        params.sourceKinds = options.sourceKinds;
+      if (options.searchTerm) params.searchTerm = options.searchTerm;
+      const result = await this.sendRequest(process, reader, {
+        method: "thread/list",
+        id: this.nextRequestId(),
+        params,
+      });
+      const data = Array.isArray(result.data)
+        ? (result.data as Array<Record<string, unknown>>)
+        : [];
+      const nextCursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
+      return { data, nextCursor };
+    });
+  }
+
+  async readThread(
+    workspace: string,
+    threadId: string,
+    includeTurns = true,
+    workerHost: WorkerHost = null,
+  ): Promise<Record<string, unknown>> {
+    return this.withInitializedProcess(workspace, workerHost, async (process, reader) => {
+      const result = await this.sendRequest(process, reader, {
+        method: "thread/read",
+        id: this.nextRequestId(),
+        params: { threadId, includeTurns },
+      });
+      return result;
+    });
+  }
+
   stopSession(session: CodexSession): void {
     session.reader.close();
     session.process.kill();
+  }
+
+  private async withInitializedProcess<T>(
+    workspace: string,
+    workerHost: WorkerHost,
+    fn: (
+      process: ChildProcessWithoutNullStreams,
+      reader: ProcessLineReader,
+      workspace: string,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const safeWorkspace = workerHost
+      ? workspace
+      : await ensureInsideRoot(workspace, this.settingsProvider().workspace.root);
+    const process = this.startProcess(safeWorkspace, workerHost);
+    const reader = new ProcessLineReader(process);
+    try {
+      await this.initializeProcess(process, reader);
+      return await fn(process, reader, safeWorkspace);
+    } finally {
+      reader.close();
+      process.kill();
+    }
   }
 
   private async initializeProcess(

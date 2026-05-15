@@ -121,6 +121,11 @@ async function loadConv(id) {
   const conv = App.convs.get(id) || await dbGetConv(id).catch(()=>null);
   let msgs = [];
   try { msgs = await dbGetMsgsForConv(conv || { id }); } catch(e) {}
+  if (!msgs.length && conv && conv.threadId) {
+    try {
+      msgs = await loadServerMessages(conv);
+    } catch(e) {}
+  }
   msgs.forEach(m => {
     if (m.type === 'user') inject(wrap, buildUserMsg(m.text || '', new Date(m.ts || Date.now())));
     else if (m.type === 'assistant') {
@@ -131,6 +136,15 @@ async function loadConv(id) {
   });
   document.getElementById('empty-state').style.display = msgs.length ? 'none' : '';
   scrollBottom(false);
+}
+
+async function loadServerMessages(conv) {
+  const res = await fetch('/api/webchat/conversations/' + encodeURIComponent(conv.threadId) + '/messages');
+  if (!res.ok) return [];
+  const data = await res.json();
+  const messages = (data.messages || []).map(m => Object.assign({}, m, { convId: m.convId || conv.threadId }));
+  for (const msg of messages) await dbPutMsg(msg).catch(()=>{});
+  return messages;
 }
 
 async function dbGetMsgsForConv(conv) {

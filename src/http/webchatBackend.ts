@@ -1,8 +1,10 @@
 import type { Express, Response } from "express";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { basename, isAbsolute, join } from "node:path";
+import { platform } from "node:os";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Duplex } from "node:stream";
 import { URL } from "node:url";
 import type { CodexAppServer, CodexSession } from "../codex/appServer.js";
@@ -18,6 +20,16 @@ interface WebchatConversation {
   createdAt: string;
   updatedAt: string;
   active: boolean;
+  source?: "active" | "codex";
+  preview?: string;
+}
+
+interface WebchatMessage {
+  id: string;
+  convId: string;
+  type: "user" | "assistant";
+  text: string;
+  ts: number;
 }
 
 interface ActiveConversation extends WebchatConversation {
@@ -35,8 +47,10 @@ export class WebchatBackend {
   ) {}
 
   registerRoutes(app: Express): void {
-    app.get("/api/webchat/conversations", (_request, response) => {
-      response.json({ conversations: this.listConversations() });
+    app.get("/api/webchat/conversations", async (_request, response) => {
+      await this.handleHttp(response, async () => {
+        response.json({ conversations: await this.listConversations() });
+      });
     });
 
     app.post("/api/webchat/conversations", async (request, response) => {
@@ -44,6 +58,14 @@ export class WebchatBackend {
         const title = stringOrDefault(request.body?.title, "New Conversation");
         const conv = await this.startConversation(title);
         response.status(201).json({ conversation: publicConversation(conv) });
+      });
+    });
+
+    app.get("/api/webchat/conversations/:threadId/messages", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const threadId = request.params.threadId;
+        const messages = await this.readConversationMessages(threadId);
+        response.json({ messages });
       });
     });
 
@@ -93,7 +115,12 @@ export class WebchatBackend {
             .json({ error: { code: "file_not_found", message: "File not found" } });
           return;
         }
-        response.download(safePath, basename(safePath));
+        if (request.query.download === "1") {
+          response.download(safePath, basename(safePath));
+          return;
+        }
+        await openInFileBrowser(safePath);
+        response.type("html").send(renderOpenedFilePage(safePath));
       });
     });
   }
@@ -125,7 +152,17 @@ export class WebchatBackend {
     );
     const ws = new SimpleWebSocket(socket);
     ws.onMessage((message) => void this.handleWsMessage(ws, message));
-    ws.send({ event: "connected", conversations: this.listConversations() });
+    void this.listConversations()
+      .then((conversations) => ws.send({ event: "connected", conversations }))
+      .catch((reason) => {
+        this.logger.debug("webchat_history_list_failed", {
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+        ws.send({
+          event: "connected",
+          conversations: Array.from(this.conversations.values()).map(publicConversation),
+        });
+      });
     return true;
   }
 
@@ -305,10 +342,42 @@ export class WebchatBackend {
     );
   }
 
-  private listConversations(): WebchatConversation[] {
-    return Array.from(this.conversations.values())
-      .map(publicConversation)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  private async listConversations(): Promise<WebchatConversation[]> {
+    const byThread = new Map<string, WebchatConversation>();
+    for (const conv of await this.listCodexConversations()) byThread.set(conv.threadId, conv);
+    for (const conv of Array.from(this.conversations.values()).map(publicConversation)) {
+      byThread.set(conv.threadId, conv);
+    }
+    return Array.from(byThread.values()).sort(
+      (a, b) => timestampMs(b.updatedAt) - timestampMs(a.updatedAt),
+    );
+  }
+
+  private async listCodexConversations(): Promise<WebchatConversation[]> {
+    const workspace = await this.webchatWorkspace();
+    try {
+      const result = await this.codex.listThreads(workspace, {
+        limit: 100,
+        cwd: workspace,
+        sourceKinds: ["appServer"],
+        sortKey: "updated_at",
+      });
+      return result.data
+        .map((thread) => conversationFromCodexThread(thread, workspace))
+        .filter((conversation) => conversation.threadId);
+    } catch (reason) {
+      this.logger.debug("webchat_codex_history_unavailable", {
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+      return [];
+    }
+  }
+
+  private async readConversationMessages(threadId: string): Promise<WebchatMessage[]> {
+    const workspace = await this.webchatWorkspace();
+    const result = await this.codex.readThread(workspace, threadId, true);
+    const thread = path(result, ["thread"]) ?? result;
+    return messagesFromCodexThread(thread, threadId);
   }
 
   private async handleHttp(response: Response, fn: () => Promise<void>): Promise<void> {
@@ -405,6 +474,34 @@ class SimpleWebSocket {
   }
 }
 
+async function openInFileBrowser(filePath: string): Promise<void> {
+  const os = platform();
+  const command = os === "darwin" ? "open" : os === "win32" ? "explorer.exe" : "xdg-open";
+  const args =
+    os === "darwin"
+      ? ["-R", filePath]
+      : os === "win32"
+        ? [`/select,${filePath}`]
+        : [dirname(filePath)];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.once("error", () => undefined);
+  child.unref();
+}
+
+function renderOpenedFilePage(filePath: string): string {
+  const escapedPath = escapeHtml(filePath);
+  const escapedName = escapeHtml(basename(filePath));
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Opened ${escapedName}</title></head><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:24px;"><h2>Opened in file browser</h2><p><strong>${escapedName}</strong></p><p style="color:#666;word-break:break-all;">${escapedPath}</p><p>If nothing opened, make sure S.T.A.R.K is running on your local machine.</p></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 async function existingFileInsideAnyRoot(path: string, roots: string[]): Promise<string | null> {
   for (const root of roots) {
     const safePath = await ensureInsideRoot(path, root).catch(() => null);
@@ -461,7 +558,126 @@ function publicConversation(conv: ActiveConversation): WebchatConversation {
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     active: conv.active,
+    source: "active",
   };
+}
+
+function conversationFromCodexThread(
+  thread: Record<string, unknown>,
+  fallbackWorkspace: string,
+): WebchatConversation {
+  const id = firstString(thread.id, path(thread, ["thread", "id"]));
+  const preview = firstString(thread.preview, thread.summary, thread.description);
+  const title = firstString(thread.name, thread.title, preview) || "Codex Conversation";
+  const createdAt = dateFromCodexTime(thread.createdAt) ?? new Date().toISOString();
+  const updatedAt = dateFromCodexTime(thread.updatedAt) ?? createdAt;
+  return {
+    id,
+    threadId: id,
+    title: truncateText(title, 80),
+    workspace: firstString(thread.cwd, path(thread, ["session", "cwd"])) || fallbackWorkspace,
+    createdAt,
+    updatedAt,
+    active: false,
+    source: "codex",
+    preview,
+  };
+}
+
+function messagesFromCodexThread(value: unknown, threadId: string): WebchatMessage[] {
+  const turns = path(value, ["turns"]);
+  const entries = Array.isArray(turns) ? turns : [];
+  const messages: WebchatMessage[] = [];
+  entries.forEach((turn, turnIndex) => {
+    if (!turn || typeof turn !== "object") return;
+    const turnRecord = turn as Record<string, unknown>;
+    const ts = timestampMs(
+      dateFromCodexTime(turnRecord.createdAt) ?? dateFromCodexTime(turnRecord.updatedAt),
+    );
+    const items = Array.isArray(turnRecord.items) ? turnRecord.items : [];
+    items.forEach((item, itemIndex) => {
+      const message = messageFromCodexItem(item, threadId, turnIndex, itemIndex, ts || Date.now());
+      if (message) messages.push(message);
+    });
+  });
+  return dedupeMessages(messages);
+}
+
+function messageFromCodexItem(
+  value: unknown,
+  threadId: string,
+  turnIndex: number,
+  itemIndex: number,
+  ts: number,
+): WebchatMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const type = firstString(item.type, path(item, ["item", "type"]));
+  const role = firstString(
+    item.role,
+    path(item, ["message", "role"]),
+    path(item, ["author", "role"]),
+  );
+  const isUser = type === "userMessage" || role === "user";
+  const isAssistant =
+    type === "agentMessage" ||
+    type === "assistantMessage" ||
+    role === "assistant" ||
+    role === "agent";
+  if (!isUser && !isAssistant) return null;
+  const rawText =
+    firstString(item.text, path(item, ["message", "content"])) || contentToText(item.content);
+  const text = isUser ? stripWebchatPrompt(rawText) : rawText;
+  if (!text.trim()) return null;
+  const stableId = firstString(item.id) || `${turnIndex}-${itemIndex}`;
+  return {
+    id: `codex-${threadId}-${stableId}-${isUser ? "user" : "assistant"}`,
+    convId: threadId,
+    type: isUser ? "user" : "assistant",
+    text,
+    ts: ts + itemIndex,
+  };
+}
+
+function dedupeMessages(messages: WebchatMessage[]): WebchatMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const key = `${message.type}:${normalizeMessageText(message.text)}:${message.ts}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function stripWebchatPrompt(text: string): string {
+  const marker = "\n\n---\nStark webchat response rules:";
+  const index = text.indexOf(marker);
+  return index >= 0 ? text.slice(0, index).trim() : text;
+}
+
+function dateFromCodexTime(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value < 10_000_000_000 ? value * 1000 : value).toISOString();
+  }
+  if (typeof value === "string" && value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && /^\d+(\.\d+)?$/.test(value)) return dateFromCodexTime(numeric);
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return new Date(ms).toISOString();
+  }
+  return null;
+}
+
+function timestampMs(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value < 10_000_000_000 ? value * 1000 : value;
+  if (typeof value === "string" && value) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return timestampMs(numeric);
+  }
+  return 0;
 }
 
 function compactRuntimeEvent(event: RuntimeEvent): Record<string, unknown> {
