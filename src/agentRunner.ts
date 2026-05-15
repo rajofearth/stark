@@ -4,8 +4,10 @@ import type { WorkspaceManager } from "./workspace/workspace.js";
 import type { WorkflowStore } from "./workflow/workflow.js";
 import type { CodexAppServer } from "./codex/appServer.js";
 import type { Logger } from "./logging/logger.js";
-import { buildPrompt } from "./promptBuilder.js";
+import { buildPrompt, type PromptContext } from "./promptBuilder.js";
 import { normalizeIssueState } from "./config/schema.js";
+import { buildContinuationPrompt } from "./workflow/linearOrchestration.js";
+import type { TaskKind } from "./types.js";
 
 export class AgentRunner {
   constructor(
@@ -23,6 +25,7 @@ export class AgentRunner {
       attempt: number | null;
       workerHost: WorkerHost;
       refreshIssueAfterTurn?: boolean;
+      taskKind?: TaskKind;
       signal: AbortSignal;
       onEvent: (event: RuntimeEvent) => void;
       onRuntimeInfo: (info: { workerHost: WorkerHost; workspacePath: string }) => void;
@@ -46,6 +49,7 @@ export class AgentRunner {
         options.signal,
         options.onEvent,
         options.refreshIssueAfterTurn ?? true,
+        options.taskKind ?? "linear",
       );
     } finally {
       await this.workspaceManager.runAfterRun(workspace.path, issue, workerHost);
@@ -60,18 +64,30 @@ export class AgentRunner {
     signal: AbortSignal,
     onEvent: (event: RuntimeEvent) => void,
     refreshIssueAfterTurn: boolean,
+    taskKind: TaskKind,
   ): Promise<Issue> {
     const session = await this.codex.startSession(workspacePath, workerHost);
+    const settings = this.settingsProvider();
+    const promptContext: PromptContext = {
+      taskKind,
+      linearOrchestration: settings.agent.linearOrchestration,
+    };
     try {
       let issue = initialIssue;
       if (!this.isRunnable(issue.state)) return issue;
-      const maxTurns = this.settingsProvider().agent.maxTurns;
+      const maxTurns = settings.agent.maxTurns;
       for (let turn = 1; turn <= maxTurns; turn += 1) {
         if (signal.aborted) throw new Error("worker_cancelled");
         const prompt =
           turn === 1
-            ? await buildPrompt(await this.workflowStore.current(), issue, attempt)
-            : continuationPrompt(turn, maxTurns);
+            ? await buildPrompt(await this.workflowStore.current(), issue, attempt, promptContext)
+            : buildContinuationPrompt(
+                taskKind,
+                issue.state,
+                turn,
+                maxTurns,
+                settings.agent.linearOrchestration,
+              );
         await this.codex.runTurn(session, prompt, issue, onEvent);
         if (!refreshIssueAfterTurn) {
           return { ...issue, state: "Human Review", updatedAt: new Date() };
@@ -104,15 +120,4 @@ export class AgentRunner {
 
 function isHumanReviewState(normalizedState: string): boolean {
   return normalizedState === "human review";
-}
-
-function continuationPrompt(turn: number, maxTurns: number): string {
-  return `Continuation guidance:
-
-- The previous Codex turn completed normally, but the Linear issue is still in an active state.
-- This is continuation turn #${turn} of ${maxTurns} for the current agent run.
-- Resume from the current workspace and workpad state instead of restarting from scratch.
-- The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-- Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
-`;
 }

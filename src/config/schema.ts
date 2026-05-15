@@ -2,6 +2,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { Settings } from "../types.js";
+import { normalizeLinearOrchestration } from "../workflow/linearOrchestration.js";
 
 const stringArray = z.array(z.string());
 const stringOrRecord = z.union([z.string(), z.record(z.string(), z.unknown())]);
@@ -45,6 +46,7 @@ const rawConfigSchema = z
         max_turns: z.number().int().positive().optional(),
         max_retry_backoff_ms: z.number().int().positive().optional(),
         max_concurrent_agents_by_state: z.record(z.string(), z.unknown()).optional(),
+        linear_orchestration: z.record(z.string(), z.unknown()).optional(),
       })
       .passthrough()
       .optional(),
@@ -177,6 +179,7 @@ export function parseSettings(
       maxTurns: agent.max_turns ?? 20,
       maxRetryBackoffMs: agent.max_retry_backoff_ms ?? 300_000,
       maxConcurrentAgentsByState: normalizeStateLimits(agent.max_concurrent_agents_by_state),
+      linearOrchestration: normalizeLinearOrchestration(agent.linear_orchestration),
     },
     codex: {
       command: codex.command ?? "codex app-server",

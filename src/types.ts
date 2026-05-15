@@ -39,6 +39,23 @@ export interface TrackerConfig {
   terminalStates: string[];
 }
 
+export interface LinearSubagentDef {
+  id: string;
+  purpose: string;
+}
+
+export interface LinearPhaseDef {
+  subagents: LinearSubagentDef[];
+  deliverables: string[];
+}
+
+export interface LinearOrchestrationSettings {
+  enabled: boolean;
+  phases: Record<string, LinearPhaseDef>;
+}
+
+export type TaskKind = "linear" | "adhoc";
+
 export interface Settings {
   tracker: TrackerConfig;
   polling: { intervalMs: number };
@@ -49,6 +66,7 @@ export interface Settings {
     maxTurns: number;
     maxRetryBackoffMs: number;
     maxConcurrentAgentsByState: Record<string, number>;
+    linearOrchestration: LinearOrchestrationSettings;
   };
   codex: {
     command: string;

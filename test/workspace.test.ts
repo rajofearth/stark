@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { Logger } from "../src/logging/logger.js";
 import { sanitizeWorkspaceKey } from "../src/pathSafety.js";
 import type { Settings } from "../src/types.js";
+import { DEFAULT_LINEAR_ORCHESTRATION } from "../src/workflow/linearOrchestration.js";
 import { WorkspaceManager } from "../src/workspace/workspace.js";
 
 describe("workspace manager", () => {
@@ -45,6 +46,7 @@ function baseSettings(root: string): Settings {
       maxTurns: 1,
       maxRetryBackoffMs: 1000,
       maxConcurrentAgentsByState: {},
+      linearOrchestration: DEFAULT_LINEAR_ORCHESTRATION,
     },
     codex: {
       command: "codex app-server",

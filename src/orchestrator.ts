@@ -301,6 +301,7 @@ export class Orchestrator extends EventEmitter {
         attempt,
         workerHost: workerHost === null ? null : workerHost,
         refreshIssueAfterTurn: !this.adHocIssues.has(issue.id),
+        taskKind: this.adHocIssues.has(issue.id) ? "adhoc" : "linear",
         signal: abortController.signal,
         onRuntimeInfo: (info) => {
           const current = this.running.get(issue.id);
