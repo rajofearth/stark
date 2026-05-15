@@ -2,10 +2,12 @@ import { describe, expect, test } from "vitest";
 import { normalizeToolCall } from "../src/codex/appServer.js";
 import { DynamicToolExecutor } from "../src/codex/dynamicTool.js";
 import {
+  explainDispatchSkip,
   isHumanReviewState,
   sortIssuesForDispatch,
   summarizeRuntimePayload,
 } from "../src/orchestrator.js";
+import { normalizeIssueState } from "../src/config/schema.js";
 import { MemoryTracker } from "../src/tracker/index.js";
 import type { Issue } from "../src/types.js";
 
@@ -37,6 +39,24 @@ describe("tracker and orchestration helpers", () => {
       toolName: "linear_graphql",
       args: { query: "query Viewer { viewer { id } }" },
     });
+  });
+
+  test("explains why an issue is not dispatchable", () => {
+    const activeStates = new Set(["todo", "in progress"].map(normalizeIssueState));
+    const terminalStates = new Set(["done"].map(normalizeIssueState));
+    const skip = explainDispatchSkip(
+      { ...issue("id-1", "ENG-1", 2, "2026-01-01T00:00:00Z"), assignedToWorker: false },
+      {
+        activeStates,
+        terminalStates,
+        claimed: new Set(),
+        running: new Set(),
+        availableSlots: 1,
+        stateSlotsAvailable: () => true,
+        workerCapacity: true,
+      },
+    );
+    expect(skip).toBe("not_assigned_to_worker");
   });
 
   test("recognizes Human Review as a parked state", () => {

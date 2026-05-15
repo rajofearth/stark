@@ -314,6 +314,38 @@ function renderDashboard(snapshot: Record<string, any>): string {
         });
       }
 
+      function renderCandidateRows(candidates, pollError, tracker) {
+        const rows = [];
+        if (tracker?.kind === "memory") {
+          rows.push("│  " + orange("Tracker is in-memory; Linear issues are not polled."));
+          rows.push("│  " + gray("Create WORKFLOW.md with tracker.kind: linear (see WORKFLOW.example.md)."));
+          rows.push("│");
+          return rows;
+        }
+        if (pollError) {
+          rows.push("│  " + red("Poll failed: " + String(pollError).slice(0, 120)));
+          rows.push("│");
+        }
+        if (!candidates.length) {
+          rows.push("│  " + gray("No active Linear issues in configured states"));
+          rows.push("│");
+          return rows;
+        }
+        for (const c of [...candidates].sort((a, b) => String(a.issue_identifier).localeCompare(String(b.issue_identifier)))) {
+          const id = c.issue_identifier ?? "unknown";
+          const state = c.state ?? "unknown";
+          const title = c.title ? dim(" " + String(c.title).replace(/\\s+/g, " ").slice(0, 72)) : "";
+          if (c.dispatchable) {
+            rows.push(\`│  \${green("▶")} \${issueBtn(id)} \${cyan(state)}\${title} \${green("dispatchable")}\`);
+          } else {
+            const reason = c.skip_reason ? dim(" (" + c.skip_reason + ")") : "";
+            rows.push(\`│  \${yellow("○")} \${issueBtn(id)} \${cyan(state)}\${title}\${reason}\`);
+          }
+        }
+        rows.push("│");
+        return rows;
+      }
+
       function render(snapshot) {
         const counts = snapshot.counts ?? {};
         const health = snapshot.health ?? {};
@@ -321,20 +353,29 @@ function renderDashboard(snapshot: Record<string, any>): string {
         const running = snapshot.running ?? [];
         const retrying = snapshot.retrying ?? [];
         const queued = snapshot.queued ?? [];
+        const tracker = snapshot.tracker ?? {};
+        const lastPoll = snapshot.last_poll ?? {};
+        const candidates = lastPoll.candidates ?? [];
+        const pollError = lastPoll.error ?? null;
         const maxAgents = (counts.running ?? 0) + (health.available_slots ?? 0);
         const polling = health.polling ?? "unknown";
+        const nextPoll = health.next_poll_due_at ? new Date(health.next_poll_due_at).toLocaleTimeString() : null;
         const time = snapshot.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "n/a";
 
         const EVENT_WIDTH = Math.max(20, Math.min(60, Math.floor((window.innerWidth - 200) / 8) - 66));
 
         const lines = [];
         lines.push(bold("╭─ S.T.A.R.K STATUS"));
+        lines.push(bold("│ Tracker: ") + cyan(String(tracker.kind ?? "unknown")) + (tracker.project_slug ? gray(" | project ") + gray(tracker.project_slug) : ""));
         lines.push(bold("│ Agents: ") + green(String(counts.running ?? 0)) + gray("/") + gray(String(maxAgents)));
         lines.push(bold("│ Runtime: ") + magenta(fmtRuntime(totals.seconds_running)));
         lines.push(bold("│ Tokens: ") + yellow(\`in \${fmtCount(totals.input_tokens)}\`) + gray(" | ") + yellow(\`out \${fmtCount(totals.output_tokens)}\`) + gray(" | ") + yellow(\`total \${fmtCount(totals.total_tokens)}\`));
         lines.push(bold("│ Rate Limits: ") + renderRateLimits(snapshot.rate_limits));
-        lines.push(bold("│ Next refresh: ") + (polling === "checking" ? cyan("checking now…") : gray("n/a")));
+        lines.push(bold("│ Next poll: ") + (polling === "checking_now" ? cyan("checking now…") : nextPoll ? gray(nextPoll) : gray("n/a")));
         lines.push(bold("│ Updated: ") + gray(time));
+        lines.push(bold("├─ Linear candidates"));
+        lines.push("│");
+        for (const row of renderCandidateRows(candidates, pollError, tracker)) lines.push(row);
         lines.push(bold("├─ Running"));
         lines.push("│");
         for (const row of renderRunningRows(running, EVENT_WIDTH)) lines.push(row);

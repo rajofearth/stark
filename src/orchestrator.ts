@@ -28,6 +28,22 @@ interface RecentEvent {
   worker_host?: string | null;
 }
 
+export interface PollCandidateSnapshot {
+  issue_id: string;
+  issue_identifier: string;
+  title: string;
+  state: string;
+  dispatchable: boolean;
+  skip_reason: string | null;
+  assigned_to_worker: boolean;
+}
+
+export interface LastPollSnapshot {
+  at: string | null;
+  error: string | null;
+  candidates: PollCandidateSnapshot[];
+}
+
 export interface AdHocIssueMetadata {
   source: string;
   channel?: string | null;
@@ -51,6 +67,7 @@ export class Orchestrator extends EventEmitter {
   private recentEvents: RecentEvent[] = [];
   private adHocQueue: Array<{ issue: Issue; metadata: AdHocIssueMetadata }> = [];
   private adHocIssues = new Map<string, { issue: Issue; metadata: AdHocIssueMetadata }>();
+  private lastPoll: LastPollSnapshot = { at: null, error: null, candidates: [] };
 
   constructor(
     private settingsProvider: () => Settings,
@@ -64,7 +81,13 @@ export class Orchestrator extends EventEmitter {
 
   async start(): Promise<void> {
     this.refreshRuntimeConfig();
-    validateDispatchSettings(this.settingsProvider());
+    const settings = this.settingsProvider();
+    validateDispatchSettings(settings);
+    if (settings.tracker.kind === "memory") {
+      this.logger.warn(
+        "Tracker is in-memory only; Linear issues will not appear until WORKFLOW.md uses tracker.kind: linear",
+      );
+    }
     await this.startupTerminalWorkspaceCleanup();
     this.scheduleTick(0);
   }
@@ -117,8 +140,16 @@ export class Orchestrator extends EventEmitter {
 
   snapshot(): Record<string, unknown> {
     const now = Date.now();
+    const settings = this.settingsProvider();
     return {
       generated_at: new Date().toISOString(),
+      tracker: {
+        kind: settings.tracker.kind,
+        project_slug: settings.tracker.projectSlug,
+        active_states: settings.tracker.activeStates,
+        assignee_filter: settings.tracker.assignee,
+      },
+      last_poll: this.lastPoll,
       health: {
         polling: this.pollCheckInProgress ? "checking_now" : "waiting",
         next_poll_due_at: this.nextPollDueAtMs
@@ -230,19 +261,29 @@ export class Orchestrator extends EventEmitter {
     this.refreshRuntimeConfig();
     this.pollCheckInProgress = true;
     this.emit("updated");
+    let polledIssues: Issue[] = [];
     try {
       await this.reconcileRunningIssues();
       validateDispatchSettings(this.settingsProvider());
       this.dispatchQueuedAdHocIssues();
-      const issues = await this.tracker.fetchCandidateIssues();
-      for (const issue of sortIssuesForDispatch(issues)) {
+      polledIssues = await this.tracker.fetchCandidateIssues();
+      for (const issue of sortIssuesForDispatch(polledIssues)) {
         if (this.availableSlots() <= 0) break;
         if (this.shouldDispatch(issue)) this.dispatchIssue(issue, null, null);
       }
+      this.lastPoll = {
+        at: new Date().toISOString(),
+        error: null,
+        candidates: polledIssues.map((issue) => this.candidateSnapshot(issue)),
+      };
     } catch (reason) {
-      this.logger.error("Poll cycle failed", {
-        reason: reason instanceof Error ? reason.message : String(reason),
-      });
+      const message = reason instanceof Error ? reason.message : String(reason);
+      this.logger.error("Poll cycle failed", { reason: message });
+      this.lastPoll = {
+        at: new Date().toISOString(),
+        error: message,
+        candidates: polledIssues.map((issue) => this.candidateSnapshot(issue)),
+      };
     } finally {
       this.pollCheckInProgress = false;
       this.emit("updated");
@@ -580,21 +621,38 @@ export class Orchestrator extends EventEmitter {
   }
 
   private shouldDispatch(issue: Issue): boolean {
-    return (
-      !!issue.id &&
-      !!issue.identifier &&
-      !!issue.title &&
-      this.isActive(issue.state) &&
-      !this.isTerminal(issue.state) &&
-      !this.isHumanReview(issue.state) &&
-      !this.claimed.has(issue.id) &&
-      !this.running.has(issue.id) &&
-      issue.assignedToWorker !== false &&
-      !todoBlockedByNonTerminal(issue, this.terminalStates()) &&
-      this.availableSlots() > 0 &&
-      this.stateSlotsAvailable(issue) &&
-      this.selectWorkerHost(null) !== "no_worker_capacity"
+    return this.dispatchSkipReason(issue) === null;
+  }
+
+  private candidateSnapshot(issue: Issue): PollCandidateSnapshot {
+    return {
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      title: issue.title,
+      state: issue.state,
+      dispatchable: this.shouldDispatch(issue),
+      skip_reason: this.dispatchSkipReason(issue),
+      assigned_to_worker: issue.assignedToWorker !== false,
+    };
+  }
+
+  private dispatchSkipReason(issue: Issue): string | null {
+    return explainDispatchSkip(issue, this.dispatchSkipContext());
+  }
+
+  private dispatchSkipContext(): DispatchSkipContext {
+    const activeStates = new Set(
+      this.settingsProvider().tracker.activeStates.map(normalizeIssueState),
     );
+    return {
+      activeStates,
+      terminalStates: this.terminalStates(),
+      claimed: this.claimed,
+      running: new Set(this.running.keys()),
+      availableSlots: this.availableSlots(),
+      stateSlotsAvailable: (candidate) => this.stateSlotsAvailable(candidate),
+      workerCapacity: this.selectWorkerHost(null) !== "no_worker_capacity",
+    };
   }
 
   private availableSlots(): number {
@@ -740,6 +798,40 @@ export class Orchestrator extends EventEmitter {
   private terminalStates(): Set<string> {
     return new Set(this.settingsProvider().tracker.terminalStates.map(normalizeIssueState));
   }
+}
+
+export interface DispatchSkipContext {
+  activeStates: Set<string>;
+  terminalStates: Set<string>;
+  claimed: Set<string>;
+  running: Set<string>;
+  availableSlots: number;
+  stateSlotsAvailable: (issue: Issue) => boolean;
+  workerCapacity: boolean;
+}
+
+export function explainDispatchSkip(issue: Issue, context: DispatchSkipContext): string | null {
+  if (!issue.id || !issue.identifier || !issue.title) return "missing_issue_fields";
+  const normalizedState = normalizeIssueState(issue.state);
+  if (!context.activeStates.has(normalizedState)) return `state_not_active:${issue.state}`;
+  if (context.terminalStates.has(normalizedState)) return `terminal_state:${issue.state}`;
+  if (isHumanReviewState(issue.state)) return "human_review";
+  if (context.claimed.has(issue.id)) return "claimed";
+  if (context.running.has(issue.id)) return "running";
+  if (issue.assignedToWorker === false) return "not_assigned_to_worker";
+  if (
+    normalizedState === "todo" &&
+    issue.blockedBy.some(
+      (blocker) =>
+        !blocker.state || !context.terminalStates.has(normalizeIssueState(blocker.state)),
+    )
+  ) {
+    return "blocked_by_open_dependency";
+  }
+  if (context.availableSlots <= 0) return "no_orchestrator_slots";
+  if (!context.stateSlotsAvailable(issue)) return `state_slot_limit:${issue.state}`;
+  if (!context.workerCapacity) return "no_worker_capacity";
+  return null;
 }
 
 export function isHumanReviewState(state: string): boolean {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { defaultLogFile } from "./logging/logger.js";
@@ -28,6 +29,11 @@ async function main(argv: string[]): Promise<void> {
   }
 
   const workflowPath = resolve(program.args[0] ?? "WORKFLOW.md");
+  if (!existsSync(workflowPath)) {
+    process.stderr.write(
+      `Warning: workflow file not found at ${workflowPath}. S.T.A.R.K will use in-memory defaults and will not poll Linear. Copy WORKFLOW.example.md to WORKFLOW.md or pass an explicit workflow path.\n`,
+    );
+  }
 
   const logsRoot = options.logsRoot ? resolve(options.logsRoot) : undefined;
   const dashboardEnabledOverride =
