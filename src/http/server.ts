@@ -4,6 +4,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import type { Logger } from "../logging/logger.js";
 import type { Settings } from "../types.js";
 import { createSlackIntegration, type SlackIntegration } from "../slack/routes.js";
+import { renderWebchat } from "./webchat.js";
 
 export class HttpServer {
   private server: Server | null = null;
@@ -54,6 +55,10 @@ export class HttpServer {
       this.slackIntegration.start();
     }
     app.use(express.json());
+    app.get("/chat", (_request, response) => {
+      const snapshot = this.orchestrator.snapshot();
+      response.type("html").send(renderWebchat(snapshot));
+    });
     app.get("/", (_request, response) => {
       const snapshot = this.orchestrator.snapshot();
       response.type("html").send(renderDashboard(snapshot));

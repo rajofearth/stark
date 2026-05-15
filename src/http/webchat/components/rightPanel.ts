@@ -1,0 +1,204 @@
+/* ── Right panel component ──────────────────────────────────────────────── */
+
+const fileIcon = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+const linkIcon = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>`;
+
+/* ── helpers ── */
+function taskSection(num: string, title: string, count: string, items: Array<{ done: boolean; label: string; sub?: string }>): string {
+  return `
+  <div class="task-sec">
+    <div class="task-sec-hdr">
+      <span class="task-num">${num}</span>
+      <span class="task-title">${title}</span>
+      <span class="task-cnt">${count}</span>
+    </div>
+    ${items.map(i => `
+    <div class="task-row">
+      <div class="task-chk${i.done ? ' done' : ''}"></div>
+      <div>
+        <div class="task-text">${i.label}</div>
+        ${i.sub ? `<div class="task-sub">${fileIcon} ${i.sub}</div>` : ''}
+      </div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function activityItem(initials: string, name: string, desc: string, time: string, special?: boolean): string {
+  const avStyle = special ? ' style="color:var(--t);border-color:var(--bd-1);"' : '';
+  return `
+  <div class="act-item">
+    <div class="act-av"${avStyle}>${initials}</div>
+    <div style="flex:1;">
+      <div class="act-name">${name}</div>
+      <div class="act-desc">${desc}</div>
+    </div>
+    <div class="act-time">${time}</div>
+  </div>`;
+}
+
+function agentItem(initials: string, name: string): string {
+  return `
+  <div class="ag-item">
+    <div class="ag-av">${initials}</div>
+    <div class="ag-name">${name}</div>
+    <div class="ag-dot"></div>
+  </div>`;
+}
+
+/* ── Tasks pane ── */
+function tasksPane(): string {
+  return `
+  <div class="rpane active" id="pane-tasks">
+    <div class="rp-sec">
+      <div class="rp-sec-hdr">
+        <span class="rp-label">Current Plan</span>
+        <span class="rp-meta" style="font-size:9px;letter-spacing:0.04em;">AUTO-GENERATED</span>
+      </div>
+    </div>
+
+    <div class="rp-sec">
+      <div class="rp-sec-hdr">
+        <span class="rp-label">Progress</span>
+        <span class="rp-meta" id="progress-label">6 / 12</span>
+      </div>
+      <div class="prog-track"><div class="prog-fill" id="progress-bar" style="width:50%"></div></div>
+    </div>
+
+    ${taskSection('1', 'Requirements Analysis', '2/2', [
+      { done: true,  label: 'Analyze SaaS metrics requirements' },
+      { done: true,  label: 'Define dashboard KPIs' },
+    ])}
+    ${taskSection('2', 'Backend Development', '2/3', [
+      { done: true,  label: 'Design API endpoints' },
+      { done: true,  label: 'Implement metrics API', sub: 'metrics.api.ts' },
+      { done: false, label: 'Setup real-time data streaming' },
+    ])}
+    ${taskSection('3', 'Frontend Development', '1/3', [
+      { done: true,  label: 'Create dashboard layout', sub: 'dashboard.tsx' },
+      { done: false, label: 'Implement charts &amp; visualizations' },
+      { done: false, label: 'Integrate real-time data' },
+    ])}
+    ${taskSection('4', 'UI/UX Design', '1/2', [
+      { done: true,  label: 'Create wireframes', sub: 'wireframes.fig' },
+      { done: false, label: 'Design system components' },
+    ])}
+    ${taskSection('5', 'Testing', '0/2', [
+      { done: false, label: 'Write test cases' },
+      { done: false, label: 'Perform integration testing' },
+    ])}
+    ${taskSection('6', 'Deployment', '0/2', [
+      { done: false, label: 'Setup CI/CD pipeline' },
+      { done: false, label: 'Deploy to production' },
+    ])}
+  </div>`;
+}
+
+/* ── Agents pane ── */
+function agentsPane(): string {
+  return `
+  <div class="rpane" id="pane-agents">
+    <div class="rp-sec">
+      <div class="rp-sec-hdr">
+        <span class="rp-label">Activity Feed</span>
+        <span style="font-size:10px;color:var(--t-m);cursor:pointer;">View all</span>
+      </div>
+    </div>
+
+    <div id="activity-feed">
+      ${activityItem('U',  'User',              'Created conversation',   '10:30')}
+      ${activityItem('DA', 'Data Analyst',       'Requirements analyzed',  '10:31')}
+      ${activityItem('BE', 'Backend Engineer',   'API endpoints designed', '10:31')}
+      ${activityItem('FD', 'Frontend Developer', 'Components built',       '10:32')}
+      ${activityItem('UX', 'UI/UX Designer',     'Wireframes created',     '10:32')}
+      ${activityItem('QA', 'QA Engineer',        'Tests defined',          '10:33')}
+      ${activityItem('DO', 'DevOps Engineer',    'Deployment ready',       '10:33')}
+      ${activityItem('✓',  'System',             'Tasks completed',        '10:33', true)}
+    </div>
+
+    <div class="rp-sec" style="padding-bottom:8px;">
+      <div class="rp-sec-hdr">
+        <span class="rp-label">Active Agents</span>
+        <span class="rp-meta" id="agents-count">6 / 6</span>
+      </div>
+    </div>
+
+    <div id="agent-list">
+      ${agentItem('DA', 'Data Analyst')}
+      ${agentItem('BE', 'Backend Engineer')}
+      ${agentItem('FD', 'Frontend Developer')}
+      ${agentItem('UX', 'UI/UX Designer')}
+      ${agentItem('QA', 'QA Engineer')}
+      ${agentItem('DO', 'DevOps Engineer')}
+    </div>
+
+    <!-- Live orchestrator (shown when real agents are running) -->
+    <div id="live-section">
+      <div class="rp-sec" style="padding-bottom:8px;">
+        <div class="rp-sec-hdr">
+          <span class="rp-label">Live Orchestrator</span>
+          <span class="rp-meta" id="live-count">0</span>
+        </div>
+      </div>
+      <div id="live-agent-list"></div>
+    </div>
+
+    <div class="rp-sec" style="padding-bottom:4px;">
+      <span class="rp-label">Context</span>
+    </div>
+    <div>
+      <div class="sub-label">Files</div>
+      <div class="ctx-row">${fileIcon} requirements.md</div>
+      <div class="ctx-row">${fileIcon} dashboard.tsx</div>
+      <div class="ctx-row">${fileIcon} metrics.api.ts</div>
+      <div class="ctx-row">${fileIcon} styles.css</div>
+      <div class="ctx-more">+ 2 more</div>
+      <div class="sub-label">Links</div>
+      <div class="ctx-row">${linkIcon} Figma Design</div>
+      <div class="ctx-row">${fileIcon} Database Schema</div>
+    </div>
+  </div>`;
+}
+
+/* ── Details pane ── */
+function detailsPane(): string {
+  return `
+  <div class="rpane" id="pane-details">
+    <div class="rp-sec" style="padding-bottom:8px;">
+      <span class="rp-label">Conversation Details</span>
+    </div>
+    <div class="det-row"><span class="det-k">Created</span>      <span class="det-v" id="det-created">—</span></div>
+    <div class="det-row"><span class="det-k">Model</span>        <span class="det-v">Codex App Server</span></div>
+    <div class="det-row"><span class="det-k">Workspace</span>    <span class="det-v" id="det-workspace">—</span></div>
+    <div class="det-row"><span class="det-k">Tracker</span>      <span class="det-v" id="det-tracker">—</span></div>
+    <div class="det-row"><span class="det-k">Status</span>       <span class="det-v" id="det-status">—</span></div>
+    <div class="det-row"><span class="det-k">Agents</span>       <span class="det-v" id="det-agents">—</span></div>
+    <div class="det-row"><span class="det-k">Total tokens</span> <span class="det-v" id="det-tokens">—</span></div>
+    <div class="det-row"><span class="det-k">Runtime</span>      <span class="det-v" id="det-runtime">—</span></div>
+    <div class="det-row">
+      <span class="det-k">Pipeline</span>
+      <span class="det-v" style="color:var(--t-m);font-size:10px;">Not connected</span>
+    </div>
+    <div class="note-box">
+      <strong style="color:var(--t-s);">Web chat pipeline not wired.</strong><br>
+      Implement to enable live responses:<br>
+      <code>WS  /api/webchat/stream</code><br>
+      <code>POST /api/webchat/send</code>
+    </div>
+  </div>`;
+}
+
+export function renderRightPanel(): string {
+  return `
+<aside id="rpanel">
+  <div id="rpanel-tabs">
+    <div class="rpanel-tab active" data-tab="tasks">Tasks</div>
+    <div class="rpanel-tab" data-tab="agents">Agents</div>
+    <div class="rpanel-tab" data-tab="details">Details</div>
+  </div>
+  <div id="rpanel-body">
+    ${tasksPane()}
+    ${agentsPane()}
+    ${detailsPane()}
+  </div>
+</aside>`;
+}
