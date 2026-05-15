@@ -13,6 +13,7 @@ const turnStartId = 3;
 
 export interface CodexSession {
   process: ChildProcessWithoutNullStreams;
+  reader: ProcessLineReader;
   threadId: string;
   workspace: string;
   workerHost: WorkerHost;
@@ -33,11 +34,12 @@ export class CodexAppServer {
       ? workspace
       : await ensureInsideRoot(workspace, this.settingsProvider().workspace.root);
     const process = this.startProcess(safeWorkspace, workerHost);
+    const reader = new ProcessLineReader(process);
     const approvalPolicy = this.settingsProvider().codex.approvalPolicy;
     const threadSandbox = this.settingsProvider().codex.threadSandbox;
     const turnSandboxPolicy = runtimeTurnSandboxPolicy(this.settingsProvider(), safeWorkspace);
     try {
-      await this.sendRequest(process, {
+      await this.sendRequest(process, reader, {
         method: "initialize",
         id: initializeId,
         params: {
@@ -50,7 +52,7 @@ export class CodexAppServer {
         },
       });
       this.send(process, { method: "initialized", params: {} });
-      const thread = await this.sendRequest(process, {
+      const thread = await this.sendRequest(process, reader, {
         method: "thread/start",
         id: threadStartId,
         params: {
@@ -64,6 +66,7 @@ export class CodexAppServer {
       if (!threadId) throw new Error(`invalid_thread_payload:${JSON.stringify(thread)}`);
       return {
         process,
+        reader,
         threadId,
         workspace: safeWorkspace,
         workerHost,
@@ -72,6 +75,7 @@ export class CodexAppServer {
         turnSandboxPolicy,
       };
     } catch (reason) {
+      reader.close();
       process.kill();
       throw reason;
     }
@@ -83,7 +87,7 @@ export class CodexAppServer {
     issue: Issue,
     onMessage: (event: RuntimeEvent) => void,
   ): Promise<{ sessionId: string; threadId: string; turnId: string }> {
-    const response = await this.sendRequest(session.process, {
+    const response = await this.sendRequest(session.process, session.reader, {
       method: "turn/start",
       id: turnStartId,
       params: {
@@ -107,11 +111,12 @@ export class CodexAppServer {
       codexAppServerPid: String(session.process.pid ?? ""),
       workerHost: session.workerHost,
     });
-    await this.awaitTurnCompletion(session.process, onMessage, sessionId);
+    await this.awaitTurnCompletion(session, onMessage, sessionId);
     return { sessionId, threadId: session.threadId, turnId };
   }
 
   stopSession(session: CodexSession): void {
+    session.reader.close();
     session.process.kill();
   }
 
@@ -125,49 +130,39 @@ export class CodexAppServer {
   }
 
   private async awaitTurnCompletion(
-    process: ChildProcessWithoutNullStreams,
+    session: CodexSession,
     onMessage: (event: RuntimeEvent) => void,
     sessionId: string,
   ): Promise<void> {
-    const timeoutMs = this.settingsProvider().codex.turnTimeoutMs;
-    const lineReader = createInterface({ input: process.stdout });
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("turn_timeout")), timeoutMs);
-      process.once("exit", (status) => {
-        clearTimeout(timer);
-        reject(new Error(`port_exit:${status}`));
-      });
-      lineReader.on("line", async (line) => {
-        const payload = parseLine(line);
-        if (!payload) return;
-        const method = typeof payload.method === "string" ? payload.method : null;
-        if (method === "turn/completed") {
-          clearTimeout(timer);
-          onMessage(runtimeEvent("turn_completed", payload, sessionId));
-          resolve();
-          return;
-        }
-        if (method === "turn/failed" || method === "turn/cancelled") {
-          clearTimeout(timer);
-          onMessage(
-            runtimeEvent(
-              method === "turn/failed" ? "turn_failed" : "turn_cancelled",
-              payload,
-              sessionId,
-            ),
-          );
-          reject(new Error(method));
-          return;
-        }
-        try {
-          const handled = await this.handleToolOrApproval(process, payload, onMessage, sessionId);
-          if (!handled) onMessage(runtimeEvent("notification", payload, sessionId));
-        } catch (reason) {
-          clearTimeout(timer);
-          reject(reason);
-        }
-      });
-    });
+    const deadline = Date.now() + this.settingsProvider().codex.turnTimeoutMs;
+    while (true) {
+      const line = await nextLineBefore(session.reader, deadline, "turn_timeout");
+      if (line === null) throw new Error("port_exit");
+      const payload = parseLine(line);
+      if (!payload) continue;
+      const method = typeof payload.method === "string" ? payload.method : null;
+      if (method === "turn/completed") {
+        onMessage(runtimeEvent("turn_completed", payload, sessionId));
+        return;
+      }
+      if (method === "turn/failed" || method === "turn/cancelled") {
+        onMessage(
+          runtimeEvent(
+            method === "turn/failed" ? "turn_failed" : "turn_cancelled",
+            payload,
+            sessionId,
+          ),
+        );
+        throw new Error(method);
+      }
+      const handled = await this.handleToolOrApproval(
+        session.process,
+        payload,
+        onMessage,
+        sessionId,
+      );
+      if (!handled) onMessage(runtimeEvent("notification", payload, sessionId));
+    }
   }
 
   private async handleToolOrApproval(
@@ -210,35 +205,78 @@ export class CodexAppServer {
     return false;
   }
 
-  private sendRequest(
+  private async sendRequest(
     process: ChildProcessWithoutNullStreams,
+    reader: ProcessLineReader,
     payload: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const id = payload.id;
     this.send(process, payload);
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("response_timeout")),
-        this.settingsProvider().codex.readTimeoutMs,
-      );
-      const lineReader = createInterface({ input: process.stdout });
-      const onLine = (line: string) => {
-        const response = parseLine(line);
-        if (response && response.id === id) {
-          clearTimeout(timeout);
-          lineReader.off("line", onLine);
-          const matched = response;
-          if (matched.error) reject(new Error(`response_error:${JSON.stringify(matched.error)}`));
-          else resolve((matched.result as Record<string, unknown>) ?? matched);
-        }
-      };
-      lineReader.on("line", onLine);
-    });
+    const deadline = Date.now() + this.settingsProvider().codex.readTimeoutMs;
+    while (true) {
+      const line = await nextLineBefore(reader, deadline, "response_timeout");
+      if (line === null) throw new Error("port_exit");
+      const response = parseLine(line);
+      if (response && response.id === id) {
+        if (response.error) throw new Error(`response_error:${JSON.stringify(response.error)}`);
+        return (response.result as Record<string, unknown>) ?? response;
+      }
+    }
   }
 
   private send(process: ChildProcessWithoutNullStreams, payload: Record<string, unknown>): void {
     process.stdin.write(`${JSON.stringify(payload)}\n`);
   }
+}
+
+class ProcessLineReader {
+  private readonly lineReader;
+  private readonly bufferedLines: string[] = [];
+  private readonly waiters: Array<(line: string | null) => void> = [];
+  private closed = false;
+
+  constructor(process: ChildProcessWithoutNullStreams) {
+    this.lineReader = createInterface({ input: process.stdout });
+    this.lineReader.on("line", (line) => this.push(line));
+    this.lineReader.once("close", () => this.close());
+    process.once("exit", () => this.close());
+  }
+
+  nextLine(): Promise<string | null> {
+    if (this.bufferedLines.length > 0) return Promise.resolve(this.bufferedLines.shift()!);
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.lineReader.close();
+    while (this.waiters.length > 0) {
+      this.waiters.shift()!(null);
+    }
+  }
+
+  private push(line: string): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(line);
+    else this.bufferedLines.push(line);
+  }
+}
+
+async function nextLineBefore(
+  reader: ProcessLineReader,
+  deadline: number,
+  timeoutReason: string,
+): Promise<string | null> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) throw new Error(timeoutReason);
+  return Promise.race([
+    reader.nextLine(),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(timeoutReason)), remainingMs);
+    }),
+  ]);
 }
 
 function parseLine(line: string): Record<string, unknown> | null {
