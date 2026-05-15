@@ -18,6 +18,17 @@ npm install
 npm run build
 ```
 
+## Document skills (optional)
+
+Stark agents use Codex `app-server`, which discovers skills from `~/.codex/skills/` (not per-issue workspaces). To enable Word, PDF, PowerPoint, and Excel workflows—and Linear file uploads via `linear_graphql`—run once per machine:
+
+```sh
+chmod +x scripts/setup-document-skills.sh
+./scripts/setup-document-skills.sh
+```
+
+Then restart Stark. The script installs full [anthropics/skills](https://github.com/anthropics/skills) packages (`docx`, `pdf`, `pptx`, `xlsx`), copies the Linear upload skill from Symphony when available, and installs macOS/Python/Node dependencies (`poppler`, `libreoffice`, `pypdf`, `openpyxl`, etc.). Markdown copies under `files/` are reference snapshots only.
+
 ## Run
 
 ```sh

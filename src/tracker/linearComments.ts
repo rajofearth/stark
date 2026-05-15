@@ -24,7 +24,7 @@ export interface CommentPollResult {
 
 const COMMENT_WATCH_NON_TERMINAL_QUERY = `
 query StarkCommentWatchNonTerminal($projectSlug: String!, $first: Int!, $after: String, $commentsFirst: Int!) {
-  issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {type: {nin: [completed, canceled]}}}, first: $first, after: $after) {
+  issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {type: {nin: ["completed", "canceled", "duplicate"]}}}, first: $first, after: $after) {
     nodes {
       id identifier title description priority branchName url createdAt updatedAt
       state { name }
@@ -110,6 +110,21 @@ export function latestCommentId(comments: LinearComment[]): string | null {
     (left, right) => (parseTime(left.createdAt) ?? 0) - (parseTime(right.createdAt) ?? 0),
   );
   return sorted.at(-1)?.id ?? null;
+}
+
+export function baselineCommentCursorId(
+  comments: LinearComment[],
+  botUserId: string,
+): string | null {
+  const latestId = latestCommentId(comments);
+  if (!latestId || !botUserId) return latestId;
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const latest = byId.get(latestId);
+  if (!latest || latest.userId === botUserId) return latestId;
+  if (!latest.parentId) return latestId;
+  const parent = byId.get(latest.parentId);
+  if (parent?.userId === botUserId) return parent.id;
+  return latestId;
 }
 
 export function commentWatchQuery(stateNameOverride: string[] | null): {

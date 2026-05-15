@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  baselineCommentCursorId,
   commentWatchQuery,
   findReplyToBotComment,
   latestCommentId,
@@ -62,7 +63,7 @@ describe("linear comment replies", () => {
 
   test("commentWatchQuery uses non-terminal filter by default", () => {
     const watch = commentWatchQuery(null);
-    expect(watch.query).toContain("nin: [completed, canceled]");
+    expect(watch.query).toContain('nin: ["completed", "canceled", "duplicate"]');
     expect(watch.variables).toEqual({});
   });
 
@@ -70,6 +71,59 @@ describe("linear comment replies", () => {
     const watch = commentWatchQuery(["Human Review", "Todo"]);
     expect(watch.query).toContain("name: {in: $stateNames}");
     expect(watch.variables).toEqual({ stateNames: ["Human Review", "Todo"] });
+  });
+
+  test("findReplyToBotComment with null cursor picks up existing human replies", () => {
+    const comments = [
+      {
+        id: "c1",
+        body: "Plan posted",
+        createdAt: "2026-01-01T10:00:00.000Z",
+        userId: botUserId,
+        userName: "Bot",
+        parentId: null,
+        parentUserId: null,
+      },
+      {
+        id: "c2",
+        body: "Please fix the tests",
+        createdAt: "2026-01-01T11:00:00.000Z",
+        userId: "human-1",
+        userName: "Alex",
+        parentId: "c1",
+        parentUserId: botUserId,
+      },
+    ];
+    expect(findReplyToBotComment(comments, botUserId, null)).toMatchObject({
+      replyCommentId: "c2",
+    });
+  });
+
+  test("baselineCommentCursorId anchors on bot parent when latest is unhandled reply", () => {
+    const comments = [
+      {
+        id: "c1",
+        body: "Plan posted",
+        createdAt: "2026-01-01T10:00:00.000Z",
+        userId: botUserId,
+        userName: "Bot",
+        parentId: null,
+        parentUserId: null,
+      },
+      {
+        id: "c2",
+        body: "Please fix the tests",
+        createdAt: "2026-01-01T11:00:00.000Z",
+        userId: "human-1",
+        userName: "Alex",
+        parentId: "c1",
+        parentUserId: botUserId,
+      },
+    ];
+    expect(baselineCommentCursorId(comments, botUserId)).toBe("c1");
+    expect(findReplyToBotComment(comments, botUserId, "c1")).toMatchObject({
+      replyCommentId: "c2",
+    });
   });
 
   test("latestCommentId returns newest comment", () => {

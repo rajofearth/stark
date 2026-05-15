@@ -1,6 +1,7 @@
 import type { Issue, Settings } from "../types.js";
 import {
   commentWatchQuery,
+  baselineCommentCursorId,
   findReplyToBotComment,
   latestCommentId,
   normalizeLinearComments,
@@ -110,8 +111,13 @@ export class LinearClient implements TrackerAdapter {
         if (!issue || issue.assignedToWorker === false) continue;
         const comments = normalizeLinearComments(node);
         if (!commentCursors.has(issue.id)) {
-          const cursorCommentId = latestCommentId(comments);
-          if (cursorCommentId) baselines.push({ issueId: issue.id, cursorCommentId });
+          const pending = findReplyToBotComment(comments, botUserId, null);
+          if (pending) {
+            replies.push({ issue: { ...issue, commentReply: pending }, trigger: pending });
+          } else {
+            const cursorCommentId = baselineCommentCursorId(comments, botUserId);
+            if (cursorCommentId) baselines.push({ issueId: issue.id, cursorCommentId });
+          }
           continue;
         }
         const trigger = findReplyToBotComment(comments, botUserId, commentCursors.get(issue.id)!);
@@ -162,7 +168,10 @@ export class LinearClient implements TrackerAdapter {
       });
       const text = await response.text();
       const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-      if (!response.ok) throw new Error(`linear_api_status:${response.status}`);
+      if (!response.ok) {
+        const detail = summarizeLinearHttpError(body, text);
+        throw new Error(`linear_api_status:${response.status}${detail ? `:${detail}` : ""}`);
+      }
       if (Array.isArray(body.errors) && body.errors.length > 0) {
         throw new Error(`linear_graphql_errors:${JSON.stringify(body.errors)}`);
       }
@@ -309,6 +318,16 @@ function normalizeBlockers(relations: unknown) {
         state: stringOrNull(getPath(issue, ["state", "name"])),
       };
     });
+}
+
+function summarizeLinearHttpError(body: Record<string, unknown>, rawText: string): string {
+  const errors = body.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    return JSON.stringify(errors).slice(0, 500);
+  }
+  const message = body.message;
+  if (typeof message === "string" && message.length > 0) return message.slice(0, 500);
+  return rawText.slice(0, 500);
 }
 
 function requireLinearConfig(apiKey: string | null, projectSlug: string | null): void {
