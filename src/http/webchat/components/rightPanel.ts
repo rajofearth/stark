@@ -150,8 +150,8 @@ function detailsPane(): string {
     <div class="det-row"><span class="det-k">Total tokens</span> <span class="det-v" id="det-tokens">—</span></div>
     <div class="det-row"><span class="det-k">Input / output</span><span class="det-v" id="det-io-tokens">—</span></div>
     <div class="det-row"><span class="det-k">Cached</span>       <span class="det-v" id="det-cached-tokens">—</span></div>
-    <div class="det-row"><span class="det-k">Context</span>      <span class="det-v" id="det-context">—</span></div>
-    <div class="det-row"><span class="det-k">Cost</span>         <span class="det-v" id="det-cost">—</span></div>
+    <div class="det-row"><span class="det-k">Context used / window</span><span class="det-v" id="det-context">not reported</span></div>
+    <div class="det-row"><span class="det-k">Cost estimate</span><span class="det-v" id="det-cost">not reported</span></div>
     <div class="det-row"><span class="det-k">Runtime</span>      <span class="det-v" id="det-runtime">—</span></div>
     <div class="rp-sec" style="padding:10px 14px 4px;"><span class="rp-label">Files worked with</span></div>
     <div id="det-files"><div class="note-box compact">No file activity yet.</div></div>
@@ -161,7 +161,7 @@ function detailsPane(): string {
     </div>
     <div class="note-box">
       <strong style="color:var(--t-s);">Direct Stark session.</strong><br>
-      Conversations are cached in IndexedDB and resumed by Stark thread ID.
+      Token, context, and cost rows update when the Codex runtime reports usage. If the runtime omits cost or context fields, the row stays marked as not reported.
     </div>
   </div>`;
 }

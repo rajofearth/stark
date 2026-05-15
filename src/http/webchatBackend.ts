@@ -210,13 +210,17 @@ export class WebchatBackend {
           : await this.startConversation(title);
         ws.send({ event: "message.started", conversation: publicConversation(conv) });
         let streamedText = "";
+        let latestStats: Record<string, unknown> = {};
         const fullText = await this.runTurn(conv, text, (event) => {
           const webEvent = runtimeEventForWebchat(event);
-          if (webEvent) ws.send(webEvent);
+          if (webEvent) ws.send({ threadId: conv.threadId, turnId: event.turnId, ...webEvent });
           const plan = extractPlan(event.payload);
           if (plan) ws.send({ event: "plan.update", plan, threadId: conv.threadId });
           const stats = extractChatStats(event.payload);
-          if (stats) ws.send({ event: "stats.update", stats, threadId: conv.threadId });
+          if (stats) {
+            latestStats = Object.assign({}, latestStats, statsWithRuntimeIds(stats, event));
+            ws.send({ event: "stats.update", stats: latestStats, threadId: conv.threadId });
+          }
           for (const file of extractFileUpdates(event.payload)) {
             ws.send({ event: "file.update", file, threadId: conv.threadId });
           }
@@ -230,16 +234,20 @@ export class WebchatBackend {
           event: "message.completed",
           content: fullText,
           conversation: publicConversation(conv),
+          threadId: conv.threadId,
+          stats: latestStats,
         });
         return;
       }
 
       ws.send({ event: "error", code: "unknown_type", message: `Unknown message type: ${type}` });
     } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (message === "turn_input_required") return;
       ws.send({
         event: "message.error",
-        code: reason instanceof Error ? reason.message : "webchat_error",
-        message: reason instanceof Error ? reason.message : String(reason),
+        code: message || "webchat_error",
+        message,
       });
     }
   }
@@ -547,6 +555,14 @@ function webchatTurnPrompt(userText: string): string {
     "- Use tools as needed, but do not stop after a tool call.",
     "- Always finish the turn with a concise user-facing response summarizing what happened, what changed or was found, and any next step.",
     "- If you created or changed files, include the exact file path(s) in the final response.",
+    "- If you need an API key or a secret, ask using a fenced JSON block with language stark-request. Example:",
+    "```stark-request",
+    '{"type":"api_key","provider":"Linear","message":"Please provide a Linear API key so I can continue."}',
+    "```",
+    "- If you need clarification, ask using the same stark-request block. Use choices for multiple choice. Example:",
+    "```stark-request",
+    '{"type":"question","message":"Which approach should I take?","choices":["Minimal fix","Full refactor","Explain options first"]}',
+    "```",
   ].join("\n");
 }
 
@@ -700,6 +716,7 @@ function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | 
   const payload = event.payload as Record<string, unknown>;
   const method = firstString(path(payload, ["method"]), path(payload, ["type"]), event.event);
   if (!method) return null;
+  if (event.event === "turn_input_required") return inputRequestForWebchat(payload, event);
   if (event.event === "session_started" || event.event === "turn_completed") return null;
   const itemEvent = runtimeItemEventForWebchat(payload, method);
   if (itemEvent) return itemEvent;
@@ -1172,18 +1189,103 @@ function extractPlan(value: unknown): unknown {
   );
 }
 
+function inputRequestForWebchat(
+  payload: Record<string, unknown>,
+  event: RuntimeEvent,
+): Record<string, unknown> {
+  const question = firstString(
+    path(payload, ["params", "question"]),
+    path(payload, ["params", "message"]),
+    path(payload, ["params", "prompt"]),
+    path(payload, ["question"]),
+    path(payload, ["message"]),
+    path(payload, ["prompt"]),
+  );
+  const requestId = firstString(
+    path(payload, ["id"]),
+    path(payload, ["params", "id"]),
+    event.turnId,
+  );
+  const requestText = question || summarizeRuntimePayload(payload);
+  const provider = inferRequestedProvider(requestText);
+  const apiKey = /api.?key|token|credential|secret/i.test(requestText);
+  const choices = normalizeChoices(
+    path(payload, ["params", "choices"]),
+    path(payload, ["params", "options"]),
+    path(payload, ["choices"]),
+    path(payload, ["options"]),
+  );
+  return {
+    event: apiKey ? "api_key.required" : "input.required",
+    kind: apiKey ? "api_key" : "question",
+    requestId: requestId || event.turnId || event.sessionId,
+    title: apiKey ? "API key required" : "Question from Stark",
+    message: requestText || "The agent needs more information to continue.",
+    provider,
+    choices,
+  };
+}
+
+function normalizeChoices(...values: unknown[]): string[] {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    return value
+      .map((choice) => {
+        if (typeof choice === "string") return choice;
+        if (choice && typeof choice === "object") {
+          return firstString(
+            path(choice, ["label"]),
+            path(choice, ["value"]),
+            path(choice, ["text"]),
+          );
+        }
+        return "";
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function inferRequestedProvider(text: string): string {
+  const value = text.toLowerCase();
+  if (value.includes("linear")) return "Linear";
+  if (value.includes("openai")) return "OpenAI";
+  if (value.includes("anthropic")) return "Anthropic";
+  if (value.includes("github")) return "GitHub";
+  if (value.includes("slack")) return "Slack";
+  return "Service";
+}
+
+function statsWithRuntimeIds(
+  stats: Record<string, unknown>,
+  event: RuntimeEvent,
+): Record<string, unknown> {
+  return {
+    ...stats,
+    threadId: firstString(stats.threadId, event.threadId),
+    turnId: firstString(stats.turnId, event.turnId),
+  };
+}
+
 function extractChatStats(value: unknown): Record<string, unknown> | null {
   const method = firstString(path(value, ["method"]), path(value, ["type"]));
   const usage =
     path(value, ["params", "tokenUsage", "total"]) ??
+    path(value, ["params", "token_usage", "total"]) ??
     path(value, ["tokenUsage", "total"]) ??
+    path(value, ["token_usage", "total"]) ??
     path(value, ["info", "total_token_usage"]) ??
+    path(value, ["params", "info", "total_token_usage"]) ??
     path(value, ["params", "usage"]) ??
     path(value, ["params", "tokenUsage"]) ??
+    path(value, ["params", "token_usage"]) ??
     path(value, ["params", "turn", "usage"]) ??
+    path(value, ["params", "turn", "tokenUsage"]) ??
+    path(value, ["params", "thread", "usage"]) ??
     path(value, ["params", "item", "usage"]) ??
     path(value, ["usage"]) ??
-    path(value, ["tokenUsage"]);
+    path(value, ["tokenUsage"]) ??
+    path(value, ["token_usage"]);
   const stats: Record<string, unknown> = {};
   const model = firstString(
     path(value, ["params", "model"]),
@@ -1211,32 +1313,74 @@ function extractChatStats(value: unknown): Record<string, unknown> | null {
   const totalTokens = firstNumber(
     path(usage, ["totalTokens"]),
     path(usage, ["total_tokens"]),
+    path(usage, ["totalTokenCount"]),
+    path(usage, ["total_token_count"]),
     path(usage, ["tokens"]),
+    path(usage, ["total"]),
     path(value, ["params", "totalTokens"]),
+    path(value, ["params", "total_tokens"]),
+    path(value, ["totalTokens"]),
+    path(value, ["total_tokens"]),
   );
   const inputTokens = firstNumber(
     path(usage, ["inputTokens"]),
     path(usage, ["input_tokens"]),
     path(usage, ["promptTokens"]),
+    path(usage, ["prompt_tokens"]),
+    path(value, ["params", "inputTokens"]),
+    path(value, ["input_tokens"]),
   );
   const outputTokens = firstNumber(
     path(usage, ["outputTokens"]),
     path(usage, ["output_tokens"]),
     path(usage, ["completionTokens"]),
+    path(usage, ["completion_tokens"]),
+    path(value, ["params", "outputTokens"]),
+    path(value, ["output_tokens"]),
   );
   const cachedTokens = firstNumber(
     path(usage, ["cachedInputTokens"]),
     path(usage, ["cached_input_tokens"]),
+    path(usage, ["cachedTokens"]),
+    path(usage, ["cached_tokens"]),
+    path(usage, ["input_tokens_details", "cached_tokens"]),
+    path(value, ["params", "cachedTokens"]),
   );
   const contextWindow = firstNumber(
     path(usage, ["contextWindow"]),
     path(usage, ["context_window"]),
+    path(usage, ["maxContextTokens"]),
+    path(usage, ["max_context_tokens"]),
     path(value, ["params", "contextWindow"]),
+    path(value, ["params", "context_window"]),
+    path(value, ["params", "context", "window"]),
+    path(value, ["contextWindow"]),
+  );
+  const contextUsedTokens = firstNumber(
+    path(usage, ["contextUsedTokens"]),
+    path(usage, ["context_used_tokens"]),
+    path(usage, ["usedContextTokens"]),
+    path(usage, ["used_context_tokens"]),
+    path(value, ["params", "contextUsedTokens"]),
+    path(value, ["params", "context", "usedTokens"]),
+    path(value, ["params", "context", "used_tokens"]),
+  );
+  const contextRemainingTokens = firstNumber(
+    path(usage, ["contextRemainingTokens"]),
+    path(usage, ["context_remaining_tokens"]),
+    path(value, ["params", "contextRemainingTokens"]),
+    path(value, ["params", "context", "remainingTokens"]),
+    path(value, ["params", "context", "remaining_tokens"]),
   );
   const cost = firstNumber(
     path(usage, ["costUsd"]),
     path(usage, ["cost_usd"]),
+    path(usage, ["cost"]),
+    path(usage, ["estimatedCostUsd"]),
+    path(usage, ["estimated_cost_usd"]),
     path(value, ["params", "costUsd"]),
+    path(value, ["params", "cost_usd"]),
+    path(value, ["costUsd"]),
   );
   const calculatedTotal = totalTokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0) || null);
   if (typeof calculatedTotal === "number") stats.totalTokens = calculatedTotal;
@@ -1244,6 +1388,9 @@ function extractChatStats(value: unknown): Record<string, unknown> | null {
   if (typeof outputTokens === "number") stats.outputTokens = outputTokens;
   if (typeof cachedTokens === "number") stats.cachedTokens = cachedTokens;
   if (typeof contextWindow === "number") stats.contextWindow = contextWindow;
+  if (typeof contextUsedTokens === "number") stats.contextUsedTokens = contextUsedTokens;
+  if (typeof contextRemainingTokens === "number")
+    stats.contextRemainingTokens = contextRemainingTokens;
   if (typeof cost === "number") stats.costUsd = cost;
   if (method === "thread/tokenUsage/updated" || Object.keys(stats).length > 0) return stats;
   return null;
@@ -1303,8 +1450,10 @@ function pathsFromUnifiedDiff(diff: string): string[] {
 function firstNumber(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value)))
-      return Number(value);
+    if (typeof value === "string" && value.trim()) {
+      const normalized = value.trim().replace(/^\$/, "");
+      if (Number.isFinite(Number(normalized))) return Number(normalized);
+    }
   }
   return null;
 }

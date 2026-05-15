@@ -39,7 +39,8 @@ function hlCode(raw) {
 /* ─── Markdown renderer ─────────────────────────────────────────────────── */
 function renderMd(text) {
   if (!text) return '';
-  let h = esc(text);
+  const parsed = extractStarkRequestBlocks(text);
+  let h = esc(parsed.text);
   // block code — replaced before inline
   h = h.replace(/\`\`\`[^\\n]*(\\n[\\s\\S]*?\\n)\`\`\`/g, (_,code) =>
     \`<pre style="background:var(--bg-2);border-radius:var(--r);padding:8px 10px;overflow-x:auto;font-family:Menlo,Monaco,Consolas,monospace;font-size:10px;color:var(--t);">\${code}</pre>\`);
@@ -72,7 +73,51 @@ function renderMd(text) {
     p = p.trim(); if (!p) return '';
     return p.startsWith('<') ? p : '<p>' + p.replace(/\\n/g,'<br>') + '</p>';
   }).join('');
-  return h;
+  const requestHtml = parsed.requests.map(req => buildInlineRequestCard(req)).join('');
+  return h + requestHtml;
+}
+
+function extractStarkRequestBlocks(text) {
+  const requests = [];
+  const fence = String.fromCharCode(96, 96, 96);
+  const cleaned = String(text || '').replace(new RegExp(fence + '(?:stark-request|stark_request)\\\\s*\\\\n([\\\\s\\\\S]*?)\\\\n' + fence, 'gi'), (match, body) => {
+    const req = parseStarkRequestBody(body);
+    if (req) requests.push(req);
+    return '';
+  });
+  return { text: cleaned, requests };
+}
+
+function parseStarkRequestBody(body) {
+  try {
+    const raw = JSON.parse(String(body || '').trim());
+    if (!raw || typeof raw !== 'object') return null;
+    const type = String(raw.type || raw.kind || '').toLowerCase();
+    const choices = Array.isArray(raw.choices) ? raw.choices.map(c => String(c)).filter(Boolean) : [];
+    const req = {
+      id: raw.id || raw.requestId || ('inline-req-' + Date.now() + '-' + Math.random().toString(36).slice(2)),
+      kind: type === 'api_key' || type === 'apikey' || type === 'api-key' ? 'api_key' : 'question',
+      provider: raw.provider || raw.service || 'Service',
+      title: raw.title || (type === 'api_key' || type === 'apikey' || type === 'api-key' ? 'API key required' : 'Question from Stark'),
+      message: raw.message || raw.question || raw.prompt || '',
+      placeholder: raw.placeholder || '',
+      choices
+    };
+    rememberInlineRequest(req);
+    return req;
+  } catch(e) {
+    return null;
+  }
+}
+
+function rememberInlineRequest(req) {
+  try {
+    if (typeof App !== 'undefined' && App.pendingRequests) App.pendingRequests.set(req.id, req);
+  } catch(e) {}
+}
+
+function buildInlineRequestCard(req) {
+  return req.kind === 'api_key' ? buildApiKeyRequestCard(req) : buildQuestionRequestCard(req);
 }
 
 /* ─── User message ──────────────────────────────────────────────────────── */
@@ -171,6 +216,56 @@ function buildPlanning(agents) {
         <div class="planning-shimmer">⚡ \${agents.length} agents coordinating…</div>
         \${rows}
       </div>
+    </div>
+  </div>\`;
+}
+
+/* ─── Agent input request cards ─────────────────────────────────────────── */
+function buildQuestionRequestCard(req) {
+  const id = attr(req.id);
+  const choices = Array.isArray(req.choices) ? req.choices : [];
+  const choiceHtml = choices.length ? \`<div class="request-choices">\${choices.map(choice => {
+    const label = String(choice || '');
+    const encoded = encodeURIComponent(label);
+    return \`<button class="request-choice" onclick="submitChoiceRequest('\${id}', decodeURIComponent('\${encoded}'))">\${esc(label)}</button>\`;
+  }).join('')}</div>\` : '';
+  const textareaHtml = choices.length ? '' : \`<textarea class="request-textarea" id="req-answer-\${id}" placeholder="\${attr(req.placeholder || 'Type your answer…')}"></textarea>\`;
+  const sendHtml = choices.length ? '' : \`<button class="btn btn-filled btn-sm" onclick="submitUserQuestionRequest('\${id}')">Send answer</button>\`;
+  return \`<div class="agent-request-card question" data-request-id="\${id}">
+    <div class="request-head">
+      <div class="request-icon">?</div>
+      <div style="flex:1;min-width:0;">
+        <div class="request-title">\${esc(req.title || 'Question from Stark')}</div>
+        <div class="request-status">\${choices.length ? 'Choose an option' : 'Waiting for your answer'}</div>
+      </div>
+    </div>
+    <div class="request-message">\${esc(req.message || 'The agent needs more information to continue.')}</div>
+    \${choiceHtml}\${textareaHtml}
+    <div class="request-actions">
+      <button class="btn btn-sm" onclick="dismissRequestCard('\${id}')">Dismiss</button>
+      \${sendHtml}
+    </div>
+  </div>\`;
+}
+
+function buildApiKeyRequestCard(req) {
+  const id = attr(req.id);
+  const provider = req.provider || 'Service';
+  return \`<div class="agent-request-card api-key" data-request-id="\${id}">
+    <div class="request-head">
+      <div class="request-icon">key</div>
+      <div style="flex:1;min-width:0;">
+        <div class="request-title">\${esc(req.title || 'API key required')}</div>
+        <div class="request-status">Waiting for \${esc(provider)} key</div>
+      </div>
+    </div>
+    <div class="request-message">\${esc(req.message || 'The agent needs an API key to continue.')}</div>
+    <label class="request-label" for="req-key-\${id}">\${esc(provider)} API key</label>
+    <input class="request-input" id="req-key-\${id}" type="password" autocomplete="off" spellcheck="false" placeholder="Paste API key…" />
+    <div class="request-help">The value is sent to the local Stark agent for this conversation. Avoid sharing keys you do not want in thread history.</div>
+    <div class="request-actions">
+      <button class="btn btn-sm" onclick="dismissRequestCard('\${id}')">Dismiss</button>
+      <button class="btn btn-filled btn-sm" onclick="submitApiKeyRequest('\${id}')">Send key</button>
     </div>
   </div>\`;
 }

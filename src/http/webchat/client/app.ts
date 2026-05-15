@@ -1,7 +1,7 @@
 /* App state, conversation management, orchestrator polling (embedded as JS) */
 export const appScript = `
 /* ─── App state ─────────────────────────────────────────────────────────── */
-const App = { conv: null, ws: null, pollTimer: null, convs: new Map(), pendingAssistant: null, busy: false, statsByConv: new Map(), filesByConv: new Map() };
+const App = { conv: null, ws: null, pollTimer: null, convs: new Map(), pendingAssistant: null, busy: false, statsByConv: new Map(), filesByConv: new Map(), pendingRequests: new Map(), systemStats: {} };
 
 function nowMs(){ return Date.now(); }
 function timeAgo(value) {
@@ -139,8 +139,47 @@ function statsKeyForThread(threadId) {
 function applyStatsUpdate(threadId, stats) {
   const key = statsKeyForThread(threadId);
   const prev = App.statsByConv.get(key) || {};
-  App.statsByConv.set(key, Object.assign({}, prev, stats || {}, { threadId: threadId || prev.threadId, updatedAt: nowMs() }));
+  const normalized = normalizeStatsPayload(stats || {});
+  App.statsByConv.set(key, Object.assign({}, prev, normalized, { threadId: threadId || normalized.threadId || prev.threadId, updatedAt: nowMs() }));
   if (key === App.conv || !App.conv) updateChatDetails(currentConv());
+}
+
+function normalizeStatsPayload(stats) {
+  const raw = stats && typeof stats === 'object' ? stats : {};
+  const usage = raw.usage || raw.tokenUsage || raw.token_usage || raw.total_token_usage || raw.tokens || {};
+  const context = raw.context || raw.contextUsage || raw.context_usage || {};
+  const next = Object.assign({}, raw);
+  const totalTokens = firstFinite(raw.totalTokens, raw.total_tokens, raw.totalTokenCount, raw.total_token_count, usage.totalTokens, usage.total_tokens, usage.tokens, usage.total);
+  const inputTokens = firstFinite(raw.inputTokens, raw.input_tokens, raw.promptTokens, raw.prompt_tokens, usage.inputTokens, usage.input_tokens, usage.promptTokens, usage.prompt_tokens);
+  const outputTokens = firstFinite(raw.outputTokens, raw.output_tokens, raw.completionTokens, raw.completion_tokens, usage.outputTokens, usage.output_tokens, usage.completionTokens, usage.completion_tokens);
+  const cachedTokens = firstFinite(raw.cachedTokens, raw.cached_tokens, raw.cachedInputTokens, raw.cached_input_tokens, usage.cachedTokens, usage.cached_tokens, usage.cachedInputTokens, usage.cached_input_tokens, usage.input_tokens_details && usage.input_tokens_details.cached_tokens);
+  const contextWindow = firstFinite(raw.contextWindow, raw.context_window, raw.maxContextTokens, raw.max_context_tokens, raw.contextWindowTokens, context.window, context.contextWindow, context.maxTokens, usage.contextWindow, usage.context_window);
+  const contextUsedTokens = firstFinite(raw.contextUsedTokens, raw.context_used_tokens, raw.usedContextTokens, raw.used_context_tokens, context.usedTokens, context.used_tokens, context.used, usage.contextUsedTokens, usage.context_used_tokens);
+  const contextRemainingTokens = firstFinite(raw.contextRemainingTokens, raw.context_remaining_tokens, context.remainingTokens, context.remaining_tokens, context.remaining);
+  const costUsd = firstFinite(raw.costUsd, raw.cost_usd, raw.cost, raw.estimatedCostUsd, raw.estimated_cost_usd, usage.costUsd, usage.cost_usd, usage.cost);
+  if (typeof totalTokens === 'number') next.totalTokens = totalTokens;
+  else if (typeof inputTokens === 'number' || typeof outputTokens === 'number') next.totalTokens = (inputTokens || 0) + (outputTokens || 0);
+  if (typeof inputTokens === 'number') next.inputTokens = inputTokens;
+  if (typeof outputTokens === 'number') next.outputTokens = outputTokens;
+  if (typeof cachedTokens === 'number') next.cachedTokens = cachedTokens;
+  if (typeof contextWindow === 'number') next.contextWindow = contextWindow;
+  if (typeof contextUsedTokens === 'number') next.contextUsedTokens = contextUsedTokens;
+  if (typeof contextRemainingTokens === 'number') next.contextRemainingTokens = contextRemainingTokens;
+  if (typeof costUsd === 'number') next.costUsd = costUsd;
+  return next;
+}
+
+function firstFinite() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const v = arguments[i];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim()) {
+      const cleaned = v.trim().replace(/^\$/, '');
+      const n = Number(cleaned);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
 }
 
 function applyFileUpdate(threadId, file) {
@@ -156,18 +195,106 @@ function applyFileUpdate(threadId, file) {
 }
 
 function updateChatDetails(conv) {
-  const stats = App.statsByConv.get(App.conv) || {};
-  setText('det-created', conv ? new Date(conv.createdAt || Date.now()).toLocaleString() : '—');
+  const directStats = App.statsByConv.get(App.conv) || {};
+  const threadStats = conv && conv.threadId ? (App.statsByConv.get(conv.threadId) || {}) : {};
+  const stats = Object.assign({}, App.systemStats || {}, threadStats, directStats);
+  setText('det-created', conv ? new Date(conv.createdAt || Date.now()).toLocaleString() : (App.systemStats.generatedAt ? new Date(App.systemStats.generatedAt).toLocaleString() : '—'));
   setText('det-thread', conv && conv.threadId ? shortId(conv.threadId) : '—');
   setText('det-turn', stats.turnId ? shortId(stats.turnId) : '—');
   setText('det-model', stats.model || 'Stark App Server');
   setText('det-status', App.busy ? 'working' : (stats.status || 'idle'));
-  setText('det-tokens', typeof stats.totalTokens === 'number' ? fmtN(stats.totalTokens) : '—');
-  setText('det-io-tokens', (typeof stats.inputTokens === 'number' || typeof stats.outputTokens === 'number') ? fmtN(stats.inputTokens || 0) + ' / ' + fmtN(stats.outputTokens || 0) : '—');
-  setText('det-cached-tokens', typeof stats.cachedTokens === 'number' ? fmtN(stats.cachedTokens) : '—');
-  setText('det-context', typeof stats.contextWindow === 'number' ? fmtN(stats.contextWindow) : '—');
-  setText('det-cost', typeof stats.costUsd === 'number' ? '$' + stats.costUsd.toFixed(4) : '—');
+  setText('det-tokens', typeof stats.totalTokens === 'number' ? fmtN(stats.totalTokens) : 'not reported');
+  setText('det-io-tokens', (typeof stats.inputTokens === 'number' || typeof stats.outputTokens === 'number') ? fmtN(stats.inputTokens || 0) + ' / ' + fmtN(stats.outputTokens || 0) : 'not reported');
+  setText('det-cached-tokens', typeof stats.cachedTokens === 'number' ? fmtN(stats.cachedTokens) : 'not reported');
+  setText('det-context', formatContextStats(stats));
+  setText('det-cost', typeof stats.costUsd === 'number' ? '$' + stats.costUsd.toFixed(4) : 'not reported');
   renderFilesWorked();
+}
+
+function formatContextStats(stats) {
+  const hasUsed = typeof stats.contextUsedTokens === 'number';
+  const hasWindow = typeof stats.contextWindow === 'number';
+  const hasRemaining = typeof stats.contextRemainingTokens === 'number';
+  if (hasUsed && hasWindow) return fmtN(stats.contextUsedTokens) + ' / ' + fmtN(stats.contextWindow);
+  if (hasWindow) return fmtN(stats.contextWindow) + ' window';
+  if (hasUsed) return fmtN(stats.contextUsedTokens) + ' used';
+  if (hasRemaining) return fmtN(stats.contextRemainingTokens) + ' remaining';
+  return 'not reported';
+}
+
+function renderInputRequest(pkt) {
+  hideTyping();
+  setComposerBusy(false);
+  const wrap = document.getElementById('messages-wrap');
+  const request = normalizeInputRequest(pkt);
+  App.pendingRequests.set(request.id, request);
+  document.getElementById('empty-state').style.display = 'none';
+  inject(wrap, request.kind === 'api_key' ? buildApiKeyRequestCard(request) : buildQuestionRequestCard(request));
+  scrollBottom(true);
+}
+
+function normalizeInputRequest(pkt) {
+  pkt = pkt || {};
+  const id = pkt.requestId || pkt.id || ('req-' + nowMs() + '-' + Math.random().toString(36).slice(2));
+  const message = pkt.message || pkt.question || pkt.prompt || (pkt.kind === 'api_key' ? 'The agent needs an API key to continue.' : 'The agent needs more information to continue.');
+  return {
+    id,
+    kind: pkt.kind || (pkt.event === 'api_key.required' ? 'api_key' : 'question'),
+    provider: pkt.provider || inferProviderFromText(message),
+    title: pkt.title || (pkt.kind === 'api_key' || pkt.event === 'api_key.required' ? 'API key required' : 'Question from Stark'),
+    message,
+    placeholder: pkt.placeholder || '',
+    choices: Array.isArray(pkt.choices) ? pkt.choices.map(c => String(c)).filter(Boolean) : [],
+    threadId: pkt.threadId || ''
+  };
+}
+
+function inferProviderFromText(text) {
+  text = String(text || '').toLowerCase();
+  if (text.includes('linear')) return 'Linear';
+  if (text.includes('openai')) return 'OpenAI';
+  if (text.includes('anthropic')) return 'Anthropic';
+  if (text.includes('github')) return 'GitHub';
+  return 'Service';
+}
+
+function submitUserQuestionRequest(id) {
+  const req = App.pendingRequests.get(id) || { message: 'Question' };
+  const input = document.getElementById('req-answer-' + id);
+  const answer = input ? input.value.trim() : '';
+  if (!answer) { toast('Enter an answer first'); return; }
+  markRequestSubmitted(id, 'Answer sent');
+  sendMsg('Answer to your question: ' + answer);
+}
+
+function submitChoiceRequest(id, answer) {
+  answer = String(answer || '').trim();
+  if (!answer) { toast('Choose an option first'); return; }
+  markRequestSubmitted(id, 'Selected: ' + answer);
+  sendMsg('Selected answer: ' + answer);
+}
+
+function submitApiKeyRequest(id) {
+  const req = App.pendingRequests.get(id) || { provider: 'Service' };
+  const input = document.getElementById('req-key-' + id);
+  const key = input ? input.value.trim() : '';
+  if (!key) { toast('Paste the API key first'); return; }
+  markRequestSubmitted(id, 'API key sent to Stark');
+  sendMsg('API key provided for ' + (req.provider || 'the requested service') + ': ' + key);
+}
+
+function dismissRequestCard(id) {
+  markRequestSubmitted(id, 'Dismissed');
+  App.pendingRequests.delete(id);
+}
+
+function markRequestSubmitted(id, label) {
+  const node = document.querySelector('[data-request-id="' + cssEscape(id) + '"]');
+  if (!node) return;
+  node.classList.add('submitted');
+  node.querySelectorAll('input, textarea, button').forEach(el => el.disabled = true);
+  const status = node.querySelector('.request-status');
+  if (status) status.textContent = label;
 }
 
 function renderFilesWorked() {
@@ -513,6 +640,16 @@ function applySnapshot(snap) {
   const totals  = snap.codex_totals  || {};
   const health  = snap.health        || {};
   const tracker = snap.tracker       || {};
+  App.systemStats = normalizeStatsPayload({
+    totalTokens: totals.total_tokens,
+    inputTokens: totals.input_tokens,
+    outputTokens: totals.output_tokens,
+    costUsd: totals.cost_usd,
+    contextWindow: totals.context_window,
+    contextUsedTokens: totals.context_used_tokens,
+    generatedAt: snap.generated_at,
+    status: health.polling || 'idle'
+  });
   const running = snap.running       || [];
 
   document.getElementById('badge-inbox').textContent  = (counts.running||0) + (counts.retrying||0);

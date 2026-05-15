@@ -507,6 +507,45 @@ html, body { height: 100%; overflow: hidden; }
 }
 #send-btn.working svg { display: none; }
 #chat-input:disabled { color: var(--t-m); cursor: wait; }
+
+/* Agent questions / API key requests */
+.agent-request-card {
+  margin: 8px 0 10px;
+  padding: 10px;
+  border: 1px solid var(--bd-1);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  max-width: 560px;
+}
+.request-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.request-icon {
+  width: 24px; height: 24px; border: 1px solid var(--bd-1); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--t-p); font-size: 9px; font-weight: 700; text-transform: uppercase;
+  background: var(--bg-3); flex-shrink: 0;
+}
+.request-title { font-size: 12px; font-weight: 700; color: var(--t-p); }
+.request-status { font-size: 10px; color: var(--t-m); }
+.request-message { font-size: 11px; color: var(--t); line-height: 1.6; margin-bottom: 8px; }
+.request-label { display: block; font-size: 10px; color: var(--t-s); margin-bottom: 4px; }
+.request-input, .request-textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--bd); border-radius: var(--r);
+  color: var(--t-p); font: inherit; font-size: 12px; padding: 8px 9px; outline: none;
+}
+.request-textarea { min-height: 74px; resize: vertical; }
+.request-input:focus, .request-textarea:focus { border-color: var(--t-m); }
+.request-help { margin-top: 6px; color: var(--t-m); font-size: 10px; line-height: 1.5; }
+.request-choices { display: grid; gap: 6px; margin-top: 8px; }
+.request-choice {
+  width: 100%; text-align: left; padding: 7px 9px; border: 1px solid var(--bd);
+  border-radius: var(--r); background: var(--bg); color: var(--t); cursor: pointer;
+  font-size: 11px; transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.request-choice:hover { border-color: var(--t-m); background: var(--bg-3); color: var(--t-p); }
+.request-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 9px; }
+.agent-request-card.submitted { opacity: 0.72; }
+.agent-request-card.submitted .request-status { color: var(--t-s); }
+
 @keyframes stark-spin { to { transform: rotate(360deg); } }
 
 /* ── Empty state ────────────────────────────────────────── */

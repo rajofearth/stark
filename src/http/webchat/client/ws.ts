@@ -70,7 +70,7 @@ function handleServerEvent(pkt) {
     case 'message.completed':
       finishAssistantMessage(pkt.content || '');
       if (pkt.conversation) upsertConversation(pkt.conversation, true);
-      applyStatsUpdate(pkt.threadId || (pkt.conversation && pkt.conversation.threadId) || '', { status: 'idle' });
+      applyStatsUpdate(pkt.threadId || (pkt.conversation && pkt.conversation.threadId) || '', Object.assign({}, pkt.stats || {}, { status: 'idle' }));
       setComposerBusy(false);
       break;
 
@@ -93,15 +93,28 @@ function handleServerEvent(pkt) {
       appendRuntimeEvent(pkt);
       break;
 
+    case 'input.required':
+    case 'api_key.required':
+      renderInputRequest(pkt);
+      applyStatsUpdate(pkt.threadId || '', { status: pkt.event === 'api_key.required' ? 'api key required' : 'waiting for user' });
+      break;
+
     case 'message.error':
-    case 'turn_failed':
+    case 'turn_failed': {
       hideTyping();
       setComposerBusy(false);
+      const msg = pkt.message || pkt.reason || 'An error occurred.';
+      if (/api.?key|token|credential|missing_linear_api_token/i.test(String(pkt.code || '') + ' ' + String(msg || ''))) {
+        renderInputRequest({ event: 'api_key.required', kind: 'api_key', provider: inferProviderFromText(msg), message: msg, threadId: pkt.threadId || '' });
+        applyStatsUpdate(pkt.threadId || '', { status: 'api key required' });
+        break;
+      }
       applyStatsUpdate(pkt.threadId || '', { status: 'error' });
       App.pendingAssistant = null;
-      inject(wrap, buildSysMsg('Stark run failed', pkt.message || pkt.reason || 'An error occurred.', [], true));
+      inject(wrap, buildSysMsg('Stark run failed', msg, [], true));
       scrollBottom(true);
       break;
+    }
 
     case 'approval_required':
       hideTyping();
