@@ -200,6 +200,14 @@ export class WebchatBackend {
         return;
       }
 
+      if (type === "message.stop" || type === "turn.stop") {
+        const threadId = stringOrDefault(packet.threadId, "");
+        if (!threadId) throw new Error("missing_thread_id");
+        const conversation = this.stopConversation(threadId);
+        ws.send({ event: "message.stopped", threadId, conversation });
+        return;
+      }
+
       if (type === "user_message" || type === "message.send") {
         const text = stringOrDefault(packet.text, "").trim();
         if (!text) throw new Error("empty_message");
@@ -244,12 +252,24 @@ export class WebchatBackend {
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       if (message === "turn_input_required") return;
+      if (message === "port_exit" || message === "turn/cancelled") return;
       ws.send({
         event: "message.error",
         code: message || "webchat_error",
         message,
       });
     }
+  }
+
+  private stopConversation(threadId: string): WebchatConversation | null {
+    const conv = this.conversations.get(threadId);
+    if (!conv) return null;
+    conv.running = false;
+    conv.active = false;
+    conv.updatedAt = new Date().toISOString();
+    this.codex.stopSession(conv.session);
+    this.conversations.delete(threadId);
+    return publicConversation(conv);
   }
 
   private async startConversation(title: string): Promise<ActiveConversation> {

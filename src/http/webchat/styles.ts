@@ -611,11 +611,16 @@ body::before {
 }
 #send-btn:hover { transform: scale(1.06) translateY(-1px); box-shadow: 0 8px 26px rgba(37,99,235,0.34); }
 #send-btn:disabled { background: var(--bg-4); color: var(--t-m); box-shadow: none; cursor: not-allowed; transform: none; }
-#send-btn.working { background: var(--bg-4); color: var(--t-s); cursor: wait; }
+#send-btn.working { background: var(--bg-4); color: var(--t-s); cursor: pointer; }
 #send-btn.working::before {
   content: ""; width: 11px; height: 11px; border-radius: 50%;
   border: 2px solid var(--t-m); border-top-color: var(--t-p);
   animation: stark-spin 0.8s linear infinite;
+}
+#send-btn.working:hover { background: rgba(239,68,68,0.18); border-color: rgba(248,113,113,0.38); color: #fecaca; box-shadow: 0 8px 26px rgba(239,68,68,0.18); }
+#send-btn.working:hover::before {
+  width: 10px; height: 10px; border: 0; border-radius: 2px;
+  background: currentColor; animation: none;
 }
 #send-btn.working svg { display: none; }
 #chat-input:disabled { color: var(--t-m); cursor: wait; }

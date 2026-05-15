@@ -74,6 +74,14 @@ function handleServerEvent(pkt) {
       setComposerBusy(false);
       break;
 
+    case 'message.stopped':
+      hideTyping();
+      App.pendingAssistant = null;
+      if (pkt.conversation) upsertConversation(pkt.conversation, false, { preserveExistingTime: true });
+      applyStatsUpdate(pkt.threadId || (pkt.conversation && pkt.conversation.threadId) || '', { status: 'stopped' });
+      setComposerBusy(false);
+      break;
+
     case 'plan.update': {
       const conv = App.convs.get(App.conv);
       if (!pkt.threadId || (conv && (conv.threadId === pkt.threadId || conv.codexThreadId === pkt.threadId))) updatePlanPanelFromPlan(pkt.plan);

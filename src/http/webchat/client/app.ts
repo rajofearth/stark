@@ -125,8 +125,9 @@ function setComposerBusy(busy) {
   }
   if (sendBtn) {
     sendBtn.classList.toggle('working', App.busy);
-    sendBtn.disabled = App.busy || !(input && input.value.trim());
-    sendBtn.title = App.busy ? 'Stark is working' : 'Send (Enter)';
+    sendBtn.disabled = !App.busy && !(input && input.value.trim());
+    sendBtn.title = App.busy ? 'Stop Stark' : 'Send (Enter)';
+    sendBtn.setAttribute('aria-label', App.busy ? 'Stop Stark' : 'Send message');
   }
   updateHeader(currentConv());
 }
@@ -336,12 +337,15 @@ async function loadConv(id) {
     } catch(e) {}
   }
   msgs.forEach(m => {
-    if (m.type === 'user') inject(wrap, buildUserMsg(m.text || '', new Date(m.ts || Date.now())));
+    if (m.html) {
+      inject(wrap, m.html);
+      if (m.text) updatePlanPanelFromText(m.text || '');
+    }
+    else if (m.type === 'user') inject(wrap, buildUserMsg(m.text || '', new Date(m.ts || Date.now())));
     else if (m.type === 'assistant') {
       inject(wrap, buildAgentMsg('Stark', 'S', m.text || '', new Date(m.ts || Date.now())));
       updatePlanPanelFromText(m.text || '');
     }
-    else if (m.html) inject(wrap, m.html);
   });
   document.getElementById('empty-state').style.display = msgs.length ? 'none' : '';
   scrollBottom(false);
@@ -402,11 +406,26 @@ function startAssistantMessage() {
   hideTyping();
   const wrap = document.getElementById('messages-wrap');
   const id = 'assistant-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-  App.pendingAssistant = { id, text: '' };
-  inject(wrap, buildAgentMsg('Stark', 'S', '', new Date()));
+  App.pendingAssistant = { id, text: '', convId: App.conv, ts: nowMs() };
+  inject(wrap, buildAgentMsg('Stark', 'S', '', new Date(App.pendingAssistant.ts)));
   const node = wrap.lastElementChild;
   if (node) node.dataset.pendingAssistant = id;
+  persistPendingAssistant().catch(()=>{});
   scrollBottom(true);
+}
+
+async function persistPendingAssistant() {
+  if (!App.pendingAssistant) return;
+  const node = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"]');
+  if (!node) return;
+  await dbPutMsg({
+    id: App.pendingAssistant.id,
+    convId: App.pendingAssistant.convId || App.conv,
+    type: 'assistant',
+    text: App.pendingAssistant.text || '',
+    html: node.outerHTML,
+    ts: App.pendingAssistant.ts || nowMs(),
+  }).catch(()=>{});
 }
 
 function appendAssistantDelta(delta) {
@@ -426,6 +445,7 @@ function appendAssistantDelta(delta) {
   content.dataset.raw = (content.dataset.raw || '') + delta;
   content.innerHTML = renderMd(content.dataset.raw);
   updatePlanPanelFromText(App.pendingAssistant.text);
+  persistPendingAssistant().catch(()=>{});
   scrollBottom(true);
 }
 
@@ -443,6 +463,7 @@ function appendRuntimeEvent(pkt) {
   upsertRuntimeBlock(events, pkt);
   updateRuntimeCollapse(events);
   appendActivity(pkt);
+  persistPendingAssistant().catch(()=>{});
   scrollBottom(true);
 }
 
@@ -516,8 +537,10 @@ async function finishAssistantMessage(content) {
   const id = App.pendingAssistant.id;
   const node = document.querySelector('[data-pending-assistant="' + id + '"]');
   if (node) delete node.dataset.pendingAssistant;
-  if (finalText.trim()) {
-    updatePlanPanelFromText(finalText);
+  if (finalText.trim()) updatePlanPanelFromText(finalText);
+  if (node) {
+    await dbPutMsg({ id, convId: App.pendingAssistant.convId || App.conv, type: 'assistant', text: finalText, html: node.outerHTML, ts: App.pendingAssistant.ts || nowMs() }).catch(()=>{});
+  } else if (finalText.trim()) {
     await dbAddMsg({ convId: App.conv, type: 'assistant', text: finalText, ts: nowMs() }).catch(()=>{});
   }
   App.pendingAssistant = null;
@@ -736,8 +759,19 @@ function bindEvents() {
   }));
 }
 
+function stopCurrentRun() {
+  if (!App.busy) return;
+  const conv = currentConv();
+  const threadId = conv && (conv.threadId || conv.codexThreadId || '');
+  if (threadId) wsSend({ type: 'message.stop', threadId });
+  hideTyping();
+  setComposerBusy(false);
+  applyStatsUpdate(threadId || '', { status: 'stopping' });
+  toast('Stopping Stark…');
+}
+
 function doSend() {
-  if (App.busy) return;
+  if (App.busy) { stopCurrentRun(); return; }
   const input = document.getElementById('chat-input');
   const text  = input.value.trim();
   if (!text) return;
