@@ -49,8 +49,11 @@ function handleServerEvent(pkt) {
       break;
 
     case 'session.created':
-    case 'session.resumed':
       if (pkt.conversation) upsertConversation(pkt.conversation, true);
+      break;
+
+    case 'session.resumed':
+      if (pkt.conversation) upsertConversation(pkt.conversation, false, { preserveExistingTime: true });
       break;
 
     case 'message.started':
@@ -67,9 +70,11 @@ function handleServerEvent(pkt) {
       if (pkt.conversation) upsertConversation(pkt.conversation, true);
       break;
 
-    case 'plan.update':
-      updatePlanPanelFromPlan(pkt.plan);
+    case 'plan.update': {
+      const conv = App.convs.get(App.conv);
+      if (!pkt.threadId || (conv && (conv.threadId === pkt.threadId || conv.codexThreadId === pkt.threadId))) updatePlanPanelFromPlan(pkt.plan);
       break;
+    }
 
     case 'runtime.activity':
     case 'runtime.tool':

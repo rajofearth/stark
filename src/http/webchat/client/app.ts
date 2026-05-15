@@ -47,7 +47,8 @@ function renderConversations() {
   list.querySelectorAll('.conv-item').forEach(el => el.addEventListener('click', () => selectConv(el.dataset.conv)));
 }
 
-async function upsertConversation(raw, select) {
+async function upsertConversation(raw, select, opts) {
+  opts = opts || {};
   const incomingThreadId = raw && (raw.threadId || raw.codexThreadId || null);
   const selected = select && App.conv ? App.convs.get(App.conv) : null;
   const existingByThread = incomingThreadId ? findConversationByThread(incomingThreadId) : null;
@@ -57,7 +58,13 @@ async function upsertConversation(raw, select) {
   }
   if (existing && incomingThreadId) {
     const title = existing.title && existing.title !== 'New Conversation' ? existing.title : (raw.title || existing.title);
-    raw = Object.assign({}, raw, { id: existing.id, title });
+    raw = Object.assign({}, raw, {
+      id: existing.id,
+      title,
+      aliases: mergeAliases(existing.aliases, raw.aliases),
+      createdAt: opts.preserveExistingTime ? existing.createdAt : (existing.createdAt || raw.createdAt),
+      updatedAt: opts.preserveExistingTime ? existing.updatedAt : (raw.updatedAt || existing.updatedAt),
+    });
   }
   const conv = normalizeConv(raw);
   removeDuplicateThreadConversations(conv);
@@ -84,6 +91,7 @@ function removeDuplicateThreadConversations(conv) {
   for (const c of Array.from(App.convs.values())) {
     if (c.id === conv.id) continue;
     if (c.threadId === threadId || c.codexThreadId === threadId) {
+      conv.aliases = mergeAliases(conv.aliases, [c.id, c.threadId, c.codexThreadId].concat(c.aliases || []));
       App.convs.delete(c.id);
       dbDeleteConv(c.id).catch(()=>{});
       if (App.conv === c.id) App.conv = conv.id;
@@ -92,8 +100,12 @@ function removeDuplicateThreadConversations(conv) {
 }
 
 async function mergeServerConvs(convs) {
-  for (const c of convs || []) await upsertConversation(c, false);
+  for (const c of convs || []) await upsertConversation(c, false, { preserveExistingTime: true });
   if (!App.conv && App.convs.size > 0) selectConv(Array.from(App.convs.values())[0].id);
+}
+
+function mergeAliases(a, b) {
+  return Array.from(new Set([].concat(a || [], b || []).filter(Boolean)));
 }
 
 function updateHeader(conv) {
@@ -105,8 +117,10 @@ function updateHeader(conv) {
 async function loadConv(id) {
   const wrap = document.getElementById('messages-wrap');
   wrap.innerHTML = '';
+  resetPlanPanel();
+  const conv = App.convs.get(id) || await dbGetConv(id).catch(()=>null);
   let msgs = [];
-  try { msgs = await dbGetMsgs(id); } catch(e) {}
+  try { msgs = await dbGetMsgsForConv(conv || { id }); } catch(e) {}
   msgs.forEach(m => {
     if (m.type === 'user') inject(wrap, buildUserMsg(m.text || '', new Date(m.ts || Date.now())));
     else if (m.type === 'assistant') {
@@ -117,6 +131,18 @@ async function loadConv(id) {
   });
   document.getElementById('empty-state').style.display = msgs.length ? 'none' : '';
   scrollBottom(false);
+}
+
+async function dbGetMsgsForConv(conv) {
+  const ids = Array.from(new Set([conv.id, conv.threadId, conv.codexThreadId].concat(conv.aliases || []).filter(Boolean)));
+  const all = [];
+  for (const id of ids) {
+    const rows = await dbGetMsgs(id).catch(()=>[]);
+    all.push(...rows);
+  }
+  const byId = new Map();
+  all.forEach(m => byId.set(m.id, m));
+  return Array.from(byId.values()).sort((a,b) => (a.ts||0) - (b.ts||0));
 }
 
 async function selectConv(id) {
@@ -162,17 +188,20 @@ function startAssistantMessage() {
 
 function appendAssistantDelta(delta) {
   if (!App.pendingAssistant) startAssistantMessage();
-  App.pendingAssistant.text += String(delta || '');
+  delta = String(delta || '');
+  App.pendingAssistant.text += delta;
   const node = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"]');
   if (!node) return;
   const body = node.querySelector('.msg-agent-body');
-  let content = body.querySelector('.md-content');
+  let content = body.lastElementChild && body.lastElementChild.classList.contains('md-content') ? body.lastElementChild : null;
   if (!content) {
     content = document.createElement('div');
     content.className = 'md-content';
+    content.dataset.raw = '';
     body.appendChild(content);
   }
-  content.innerHTML = renderMd(App.pendingAssistant.text);
+  content.dataset.raw = (content.dataset.raw || '') + delta;
+  content.innerHTML = renderMd(content.dataset.raw);
   updatePlanPanelFromText(App.pendingAssistant.text);
   scrollBottom(true);
 }
@@ -182,15 +211,57 @@ function appendRuntimeEvent(pkt) {
   const node = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"]');
   if (!node) return;
   const body = node.querySelector('.msg-agent-body');
-  let events = body.querySelector('.runtime-events');
+  let events = body.lastElementChild && body.lastElementChild.classList.contains('runtime-events') ? body.lastElementChild : null;
   if (!events) {
     events = document.createElement('div');
     events.className = 'runtime-events';
     body.appendChild(events);
   }
-  inject(events, buildRuntimeBlock(pkt));
+  upsertRuntimeBlock(events, pkt);
+  updateRuntimeCollapse(events);
   appendActivity(pkt);
   scrollBottom(true);
+}
+
+function upsertRuntimeBlock(events, pkt) {
+  const html = buildRuntimeBlock(pkt);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const next = tmp.firstElementChild;
+  if (!next) return;
+  const key = next.dataset.runtimeKey;
+  const existing = key ? events.querySelector('.runtime-block[data-runtime-key="' + cssEscape(key) + '"]') : null;
+  if (existing) existing.replaceWith(next);
+  else events.appendChild(next);
+}
+
+function cssEscape(value) {
+  if (window.CSS && CSS.escape) return CSS.escape(value);
+  return String(value).replace(/"/g, '\\"');
+}
+
+function updateRuntimeCollapse(events) {
+  const blocks = Array.from(events.querySelectorAll('.runtime-block'));
+  let toggle = events.querySelector('.runtime-toggle');
+  if (blocks.length <= 4) {
+    blocks.forEach(b => b.classList.remove('runtime-hidden'));
+    if (toggle) toggle.remove();
+    return;
+  }
+  const expanded = events.dataset.expanded === '1';
+  blocks.forEach((b, i) => b.classList.toggle('runtime-hidden', !expanded && i >= 4));
+  if (!toggle) {
+    toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'runtime-toggle';
+    toggle.addEventListener('click', () => {
+      events.dataset.expanded = events.dataset.expanded === '1' ? '0' : '1';
+      updateRuntimeCollapse(events);
+      scrollBottom(true);
+    });
+    events.appendChild(toggle);
+  }
+  toggle.textContent = expanded ? 'show less' : 'show ' + (blocks.length - 4) + ' more';
 }
 
 function appendActivity(pkt) {
@@ -207,8 +278,16 @@ async function finishAssistantMessage(content) {
   if (!App.pendingAssistant) startAssistantMessage();
   if (content && content !== App.pendingAssistant.text) {
     App.pendingAssistant.text = content;
-    const node = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"] .md-content');
-    if (node) node.innerHTML = renderMd(content);
+    const msg = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"]');
+    const body = msg ? msg.querySelector('.msg-agent-body') : null;
+    if (body) {
+      body.querySelectorAll('.md-content').forEach(n => n.remove());
+      const node = document.createElement('div');
+      node.className = 'md-content';
+      node.dataset.raw = content;
+      node.innerHTML = renderMd(content);
+      body.appendChild(node);
+    }
   }
   const finalText = App.pendingAssistant.text || content || '';
   const id = App.pendingAssistant.id;
@@ -223,6 +302,17 @@ async function finishAssistantMessage(content) {
 }
 
 /* ─── Plan panel ────────────────────────────────────────────────────────── */
+function resetPlanPanel() {
+  const list = document.getElementById('plan-list');
+  if (list) list.innerHTML = '<div class="note-box">When Stark proposes a plan, it will appear here and update while the response streams.</div>';
+  const label = document.getElementById('progress-label');
+  if (label) label.textContent = '0 / 0';
+  const bar = document.getElementById('progress-bar');
+  if (bar) bar.style.width = '0%';
+  const src = document.getElementById('plan-source');
+  if (src) src.textContent = 'WAITING';
+}
+
 function updatePlanPanelFromPlan(plan) {
   if (!plan) return;
   const items = Array.isArray(plan) ? plan : (Array.isArray(plan.items) ? plan.items : []);

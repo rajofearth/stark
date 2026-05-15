@@ -1,8 +1,8 @@
 import type { Express, Response } from "express";
 import { createHash } from "node:crypto";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { Duplex } from "node:stream";
 import { URL } from "node:url";
 import type { CodexAppServer, CodexSession } from "../codex/appServer.js";
@@ -86,9 +86,8 @@ export class WebchatBackend {
             .json({ error: { code: "missing_path", message: "File path is required" } });
           return;
         }
-        const safePath = await ensureInsideRoot(rawPath, this.settingsProvider().workspace.root);
-        const fileStat = await stat(safePath).catch(() => null);
-        if (!fileStat?.isFile()) {
+        const safePath = await this.resolveDownloadPath(rawPath);
+        if (!safePath) {
           response
             .status(404)
             .json({ error: { code: "file_not_found", message: "File not found" } });
@@ -178,7 +177,7 @@ export class WebchatBackend {
           const webEvent = runtimeEventForWebchat(event);
           if (webEvent) ws.send(webEvent);
           const plan = extractPlan(event.payload);
-          if (plan) ws.send({ event: "plan.update", plan });
+          if (plan) ws.send({ event: "plan.update", plan, threadId: conv.threadId });
           const extracted = extractAssistantText(event.payload, text);
           const delta = nextAssistantDelta(streamedText, extracted);
           if (!delta) return;
@@ -253,13 +252,13 @@ export class WebchatBackend {
     conv.updatedAt = new Date().toISOString();
     let assistantText = "";
     try {
-      await this.codex.runDirectTurn(conv.session, text, conv.title, (event) => {
+      await this.codex.runDirectTurn(conv.session, webchatTurnPrompt(text), conv.title, (event) => {
         const extracted = extractAssistantText(event.payload, text);
         const delta = nextAssistantDelta(assistantText, extracted);
         if (delta) assistantText += delta;
         onEvent(event);
       });
-      return assistantText;
+      return assistantText.trim() ? assistantText : finalTurnFallback();
     } finally {
       conv.running = false;
       conv.updatedAt = new Date().toISOString();
@@ -270,6 +269,40 @@ export class WebchatBackend {
     const workspace = join(this.settingsProvider().workspace.root, "webchat");
     await mkdir(workspace, { recursive: true });
     return workspace;
+  }
+
+  private async resolveDownloadPath(rawPath: string): Promise<string | null> {
+    const roots = this.downloadRoots();
+    const candidates = new Set<string>();
+    if (isAbsolute(rawPath)) candidates.add(rawPath);
+    else {
+      for (const root of roots) candidates.add(join(root, rawPath));
+    }
+    for (const candidate of candidates) {
+      const safePath = await existingFileInsideAnyRoot(candidate, roots);
+      if (safePath) return safePath;
+    }
+
+    // If the stored assistant text contains a stale absolute path but the artifact still exists in
+    // the webchat workspace, fall back to a bounded basename lookup under known artifact roots.
+    const name = basename(rawPath);
+    if (!name || name === "." || name === "..") return null;
+    for (const root of roots) {
+      const found = await findFileByBasename(root, name, 4);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private downloadRoots(): string[] {
+    const root = this.settingsProvider().workspace.root;
+    return Array.from(
+      new Set([
+        root,
+        join(root, "webchat"),
+        ...Array.from(this.conversations.values()).map((c) => c.workspace),
+      ]),
+    );
   }
 
   private listConversations(): WebchatConversation[] {
@@ -372,6 +405,53 @@ class SimpleWebSocket {
   }
 }
 
+async function existingFileInsideAnyRoot(path: string, roots: string[]): Promise<string | null> {
+  for (const root of roots) {
+    const safePath = await ensureInsideRoot(path, root).catch(() => null);
+    if (!safePath) continue;
+    const fileStat = await stat(safePath).catch(() => null);
+    if (fileStat?.isFile()) return safePath;
+  }
+  return null;
+}
+
+async function findFileByBasename(
+  root: string,
+  name: string,
+  maxDepth: number,
+): Promise<string | null> {
+  if (maxDepth < 0) return null;
+  const rootStat = await stat(root).catch(() => null);
+  if (!rootStat?.isDirectory()) return null;
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = join(root, entry.name);
+    if (entry.isFile() && entry.name === name) return child;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === "node_modules" || entry.name === ".git") continue;
+    const found = await findFileByBasename(join(root, entry.name), name, maxDepth - 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function webchatTurnPrompt(userText: string): string {
+  return [
+    userText,
+    "",
+    "---",
+    "Stark webchat response rules:",
+    "- Use tools as needed, but do not stop after a tool call.",
+    "- Always finish the turn with a concise user-facing response summarizing what happened, what changed or was found, and any next step.",
+    "- If you created or changed files, include the exact file path(s) in the final response.",
+  ].join("\n");
+}
+
+function finalTurnFallback(): string {
+  return "I finished the run, but no final written summary was produced. Check the tool activity above for what happened, then send a follow-up if you want me to continue or clarify.";
+}
+
 function publicConversation(conv: ActiveConversation): WebchatConversation {
   return {
     id: conv.id,
@@ -413,9 +493,11 @@ function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | 
       event: "runtime.activity",
       kind: event.event === "approval_required" ? "approval" : "approved",
       title: event.event === "approval_required" ? "Approval required" : "Approved automatically",
-      detail: toolOrCommandName(payload) || humanizeEventName(method),
+      key: runtimeEventKey(payload) || toolOrCommandName(payload) || method,
+      detail: truncateText(toolOrCommandName(payload) || humanizeEventName(method), 160),
     };
   }
+  if (isToolOutputDeltaEvent(payload)) return null;
   if (
     event.event === "tool_call_completed" ||
     event.event === "tool_call_failed" ||
@@ -425,7 +507,8 @@ function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | 
       event: "runtime.tool",
       status:
         event.event === "tool_call_failed" || /failed|error/i.test(method) ? "failed" : "completed",
-      title: toolOrCommandName(payload) || humanizeEventName(method),
+      title: truncateText(toolOrCommandName(payload) || humanizeEventName(method), 90),
+      key: runtimeEventKey(payload) || toolOrCommandName(payload) || method,
       detail: summarizeRuntimePayload(payload),
     };
   }
@@ -536,6 +619,17 @@ function isToolOrCommandEvent(value: unknown): boolean {
   return isToolOrCommandType(method) || isToolOrCommandType(type);
 }
 
+function isToolOutputDeltaEvent(value: unknown): boolean {
+  const method = firstString(path(value, ["method"]), path(value, ["type"]));
+  const type = firstString(
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+    path(value, ["params", "type"]),
+    path(value, ["type"]),
+  );
+  return /output[ _/-]?delta|stdout[ _/-]?delta|stderr[ _/-]?delta/i.test(`${method} ${type}`);
+}
+
 function isToolOrCommandType(value: string): boolean {
   return /tool|command|exec|shell|patch|file_change|function_call|local_shell|stdout|stderr/i.test(
     value,
@@ -567,6 +661,18 @@ function isReasoningEvent(value: unknown): boolean {
     path(value, ["type"]),
   ).toLowerCase();
   return /reasoning|thought|analysis/.test(type);
+}
+
+function runtimeEventKey(value: unknown): string {
+  return firstString(
+    path(value, ["id"]),
+    path(value, ["params", "id"]),
+    path(value, ["params", "item", "id"]),
+    path(value, ["params", "callId"]),
+    path(value, ["params", "call_id"]),
+    path(value, ["params", "item", "callId"]),
+    path(value, ["params", "item", "call_id"]),
+  );
 }
 
 function toolOrCommandName(value: unknown): string {
@@ -603,7 +709,7 @@ function summarizeRuntimePayload(value: unknown): string {
   );
   return truncateText(
     text || humanizeEventName(firstString(path(value, ["method"]), path(value, ["type"]))),
-    220,
+    160,
   );
 }
 

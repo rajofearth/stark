@@ -133,13 +133,21 @@ function buildRuntimeBlock(opts) {
   opts = opts || {};
   const cls = opts.status === 'failed' || opts.kind === 'error' ? ' failed' : '';
   const icon = opts.status === 'failed' || opts.kind === 'error' ? '!' : (opts.kind === 'done' ? '✓' : '•');
-  return \`<div class="runtime-block\${cls}">
+  const title = truncateRuntimeText(opts.title || 'Runtime event', 90);
+  const detail = truncateRuntimeText(opts.detail || '', 180);
+  const key = opts.key || opts.title || '';
+  return \`<div class="runtime-block\${cls}" data-runtime-key="\${attr(key)}">
     <div class="runtime-dot">\${icon}</div>
     <div class="runtime-body">
-      <div class="runtime-title">\${esc(opts.title || 'Runtime event')}</div>
-      \${opts.detail ? \`<div class="runtime-detail">\${esc(opts.detail)}</div>\` : ''}
+      <div class="runtime-title" title="\${attr(opts.title || '')}">\${esc(title)}</div>
+      \${detail ? \`<div class="runtime-detail" title="\${attr(opts.detail || '')}">\${esc(detail)}</div>\` : ''}
     </div>
   </div>\`;
+}
+
+function truncateRuntimeText(text, max) {
+  text = String(text || '').replace(new RegExp('\\\\s+', 'g'), ' ').trim();
+  return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
 /* ─── Planning block (collapsible) ─────────────────────────────────────── */

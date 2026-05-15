@@ -434,6 +434,13 @@ html, body { height: 100%; overflow: hidden; }
 }
 .runtime-title { font-size: 11px; font-weight: 600; color: var(--t); }
 .runtime-detail { font-size: 10px; color: var(--t-m); margin-top: 1px; word-break: break-word; }
+.runtime-hidden { display: none; }
+.runtime-toggle {
+  align-self: flex-start; background: none; border: none; padding: 1px 2px;
+  color: var(--t-m); font-size: 10px; cursor: pointer; text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.runtime-toggle:hover { color: var(--t); }
 
 /* ── Buttons ────────────────────────────────────────────── */
 .btn {
