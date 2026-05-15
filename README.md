@@ -22,14 +22,15 @@ npm run build
 
 ```sh
 export LINEAR_API_KEY=...
-npm run build
-node dist/src/cli.js --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
+npm start -- ./WORKFLOW.md
 ```
 
 Optional flags:
 
 - `--logs-root <path>` writes logs to `<path>/stark.log`.
-- `--port <port>` enables the dashboard and JSON API at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- `--port <port>` sets the dashboard and JSON API port. The default is `4000`.
+- `--no-open` starts without opening the dashboard in your browser.
+- `--no-dashboard` starts without the dashboard/API.
 
 ## Dashboard
 

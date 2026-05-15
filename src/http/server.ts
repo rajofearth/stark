@@ -13,8 +13,16 @@ export class HttpServer {
 
   async start(): Promise<number> {
     const app = this.createApp();
-    await new Promise<void>((resolve) => {
-      this.server = app.listen(this.port, this.host, () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        this.server = null;
+        reject(error);
+      };
+      this.server = app.listen(this.port, this.host, () => {
+        this.server?.off("error", onError);
+        resolve();
+      });
+      this.server.once("error", onError);
     });
     const address = this.server!.address();
     return typeof address === "object" && address ? address.port : this.port;

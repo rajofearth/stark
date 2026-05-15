@@ -8,9 +8,9 @@
     "stark": "dist/src/cli.js"
   },
   "scripts": {
-    "dev": "tsx src/cli.ts",
+    "dev": "tsx src/cli.ts --yes",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/cli.js",
+    "start": "npm run build && node dist/src/cli.js --yes",
     "fmt": "prettier --write .",
     "fmt:check": "prettier --check .",
     "lint": "tsc -p tsconfig.json --noEmit",

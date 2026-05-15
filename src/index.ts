@@ -14,6 +14,7 @@ export interface StarkOptions {
   workflowPath: string;
   logFile?: string | null;
   portOverride?: number | null;
+  dashboardEnabledOverride?: boolean | null;
   logger?: Logger;
 }
 
@@ -24,6 +25,7 @@ export class StarkRuntime {
   private workspaceManager: WorkspaceManager;
   private orchestrator: Orchestrator;
   private httpServer: HttpServer | null = null;
+  private dashboardUrlValue: string | null = null;
   private logger: Logger;
 
   constructor(private readonly options: StarkOptions) {
@@ -55,13 +57,16 @@ export class StarkRuntime {
     await this.workflowStore.start();
     await this.reloadSettings();
     await this.orchestrator.start();
-    const port = this.options.portOverride ?? this.getSettings().server.port;
-    if (typeof port === "number") {
-      this.httpServer = new HttpServer(this.orchestrator, port, this.getSettings().server.host);
+    const settings = this.getSettings();
+    const port = settings.server.port;
+    if (settings.observability.dashboardEnabled && typeof port === "number") {
+      this.httpServer = new HttpServer(this.orchestrator, port, settings.server.host);
       const boundPort = await this.httpServer.start();
+      this.dashboardUrlValue = `http://${settings.server.host}:${boundPort}/`;
       this.logger.info("HTTP observability server started", {
-        host: this.getSettings().server.host,
+        host: settings.server.host,
         port: boundPort,
+        url: this.dashboardUrlValue,
       });
     }
     setInterval(() => void this.reloadSettings().catch(() => undefined), 1_000).unref();
@@ -70,11 +75,16 @@ export class StarkRuntime {
   async stop(): Promise<void> {
     this.orchestrator.stop();
     await this.httpServer?.stop();
+    this.dashboardUrlValue = null;
     await this.workflowStore.stop();
   }
 
   snapshot(): Record<string, unknown> {
     return this.orchestrator.snapshot();
+  }
+
+  dashboardUrl(): string | null {
+    return this.dashboardUrlValue;
   }
 
   private getSettings(): Settings {
@@ -87,6 +97,12 @@ export class StarkRuntime {
     const settings = parseSettings(workflow.config, this.options.workflowPath);
     if (this.options.portOverride !== undefined && this.options.portOverride !== null) {
       settings.server.port = this.options.portOverride;
+    }
+    if (
+      this.options.dashboardEnabledOverride !== undefined &&
+      this.options.dashboardEnabledOverride !== null
+    ) {
+      settings.observability.dashboardEnabled = this.options.dashboardEnabledOverride;
     }
     this.settings = settings;
   }

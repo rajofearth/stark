@@ -33,5 +33,18 @@ describe("workflow and config", () => {
     expect(settings.polling.intervalMs).toBe(30_000);
     expect(settings.workspace.root).toContain("work");
     expect(settings.codex.command).toBe("codex app-server");
+    expect(settings.server.port).toBe(4000);
+  });
+
+  test("allows workflows to disable the default dashboard", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stark-config-"));
+    const workflowPath = join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflowPath,
+      "---\ntracker:\n  kind: memory\nserver:\n  port: null\n---\nPrompt\n",
+    );
+    const workflow = await loadWorkflow(workflowPath);
+    const settings = parseSettings(workflow.config, workflowPath);
+    expect(settings.server.port).toBeNull();
   });
 });

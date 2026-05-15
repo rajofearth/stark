@@ -178,7 +178,7 @@ export function parseSettings(
       renderIntervalMs: observability.render_interval_ms ?? 16,
     },
     server: {
-      port: server.port ?? null,
+      port: server.port === undefined ? 4000 : server.port,
       host: server.host ?? "127.0.0.1",
     },
   };
