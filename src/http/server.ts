@@ -74,148 +74,261 @@ function renderDashboard(snapshot: Record<string, any>): string {
     <title>S.T.A.R.K</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
-      :root {
-        color-scheme: dark;
-        --bg: #080b12;
-        --panel: #101622;
-        --panel-2: #151d2c;
-        --text: #e8edf7;
-        --muted: #8f9bae;
-        --line: #263247;
-        --accent: #7dd3fc;
-        --green: #86efac;
-        --yellow: #fde68a;
-        --red: #fca5a5;
-      }
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        margin: 0;
-        background: radial-gradient(circle at top left, #152033 0, var(--bg) 42rem);
-        color: var(--text);
-        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0a0c10;
+        color: #c9d1d9;
+        font: 13px/1.5 "Menlo", "Monaco", "Consolas", "Courier New", monospace;
+        min-height: 100vh;
       }
-      header {
-        position: sticky;
-        top: 0;
-        z-index: 5;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 18px 24px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(8, 11, 18, 0.86);
-        backdrop-filter: blur(14px);
+      #terminal {
+        padding: 18px 20px 32px;
+        white-space: pre;
+        overflow-x: auto;
       }
-      h1 { margin: 0; font-size: 18px; letter-spacing: 0.12em; }
-      button {
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 9px 12px;
-        color: var(--text);
-        background: var(--panel-2);
+      .bold { font-weight: 700; color: #e6edf3; }
+      .green { color: #3fb950; }
+      .cyan { color: #58a6ff; }
+      .magenta { color: #bc8cff; }
+      .yellow { color: #d29922; }
+      .red { color: #f85149; }
+      .orange { color: #e3b341; }
+      .gray { color: #6e7681; }
+      .dim { opacity: 0.6; }
+      .issue-btn {
+        background: none;
+        border: none;
+        font: inherit;
+        color: #58a6ff;
         cursor: pointer;
+        padding: 0;
+        text-decoration: underline;
+        text-underline-offset: 2px;
       }
-      button:hover { border-color: var(--accent); }
-      main { padding: 24px; display: grid; gap: 20px; }
-      .muted { color: var(--muted); }
-      .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-      .card, section {
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        background: linear-gradient(180deg, rgba(21, 29, 44, 0.92), rgba(16, 22, 34, 0.92));
-        box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      .issue-btn:hover { color: #79c0ff; }
+      #detail-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.7);
+        z-index: 10;
+        align-items: center;
+        justify-content: center;
       }
-      .card { padding: 16px; }
-      .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
-      .card .value { margin-top: 6px; font-size: 28px; font-weight: 700; }
-      section { overflow: hidden; }
-      section h2 { margin: 0; padding: 16px 18px; border-bottom: 1px solid var(--line); font-size: 15px; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid rgba(38, 50, 71, 0.72); vertical-align: top; }
-      th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
-      tr:hover td { background: rgba(125, 211, 252, 0.04); }
-      .pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; color: var(--muted); }
-      .ok { color: var(--green); }
-      .warn { color: var(--yellow); }
-      .bad { color: var(--red); }
-      .grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 20px; }
-      .events { list-style: none; margin: 0; padding: 0; }
-      .events li { padding: 12px 16px; border-bottom: 1px solid rgba(38, 50, 71, 0.72); }
-      .events strong { color: var(--accent); }
-      pre {
-        margin: 0;
-        padding: 16px;
-        max-height: 360px;
+      #detail-overlay.open { display: flex; }
+      #detail-box {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 20px;
+        max-width: 700px;
+        width: 90vw;
+        max-height: 80vh;
         overflow: auto;
-        color: #dbeafe;
-        background: #05070c;
+        position: relative;
       }
-      .empty { padding: 22px; color: var(--muted); }
-      @media (max-width: 960px) {
-        .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .grid { grid-template-columns: 1fr; }
+      #detail-close {
+        position: absolute;
+        top: 10px; right: 14px;
+        background: none; border: none;
+        color: #6e7681; font-size: 18px; cursor: pointer;
+        font-family: inherit;
+      }
+      #detail-close:hover { color: #e6edf3; }
+      #detail-content {
+        white-space: pre;
+        font: 12px/1.5 "Menlo", "Monaco", "Consolas", monospace;
+        color: #adbac7;
       }
     </style>
   </head>
   <body>
-    <header>
-      <div>
-        <h1>S.T.A.R.K</h1>
-        <div class="muted">System for Task Automation, Reasoning &amp; Knowledge</div>
+    <div id="terminal">loading…</div>
+    <div id="detail-overlay">
+      <div id="detail-box">
+        <button id="detail-close" title="Close">✕</button>
+        <pre id="detail-content"></pre>
       </div>
-      <div>
-        <span id="status" class="pill">loading</span>
-        <button id="refresh">Refresh now</button>
-      </div>
-    </header>
-    <main>
-      <div class="cards">
-        <div class="card"><div class="label">Running</div><div id="running-count" class="value">0</div></div>
-        <div class="card"><div class="label">Retrying</div><div id="retrying-count" class="value">0</div></div>
-        <div class="card"><div class="label">Available Slots</div><div id="slots-count" class="value">0</div></div>
-        <div class="card"><div class="label">Completed</div><div id="completed-count" class="value">0</div></div>
-        <div class="card"><div class="label">Tokens</div><div id="tokens-count" class="value">0</div></div>
-      </div>
-      <div class="grid">
-        <section>
-          <h2>Active Agent Runs</h2>
-          <div id="running"></div>
-        </section>
-        <section>
-          <h2>Runtime Health</h2>
-          <pre id="health"></pre>
-        </section>
-      </div>
-      <div class="grid">
-        <section>
-          <h2>Retry Queue</h2>
-          <div id="retrying"></div>
-        </section>
-        <section>
-          <h2>Codex Totals</h2>
-          <pre id="totals"></pre>
-        </section>
-      </div>
-      <div class="grid">
-        <section>
-          <h2>Recent Events</h2>
-          <ul id="events" class="events"></ul>
-        </section>
-        <section>
-          <h2>Issue Detail</h2>
-          <pre id="detail">Click an issue identifier to inspect it.</pre>
-        </section>
-      </div>
-    </main>
+    </div>
     <script>
       window.__INITIAL_STATE__ = ${JSON.stringify(snapshot)};
       const stateUrl = "/api/v1/state";
-      const $ = (id) => document.getElementById(id);
-      const escapeHtml = (value) => String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;");
+
+      const esc = (v) => String(v ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+
+      const span = (cls, text) => \`<span class="\${cls}">\${esc(text)}</span>\`;
+      const bold = (t) => \`<span class="bold">\${esc(t)}</span>\`;
+      const green = (t) => span("green", t);
+      const cyan = (t) => span("cyan", t);
+      const magenta = (t) => span("magenta", t);
+      const yellow = (t) => span("yellow", t);
+      const gray = (t) => span("gray", t);
+      const red = (t) => span("red", t);
+      const orange = (t) => span("orange", t);
+      const dim = (t) => span("dim", t);
+
+      function issueBtn(id) {
+        return \`<button class="issue-btn" data-issue="\${esc(id)}">\${esc(id)}</button>\`;
+      }
+
+      function fmtCount(n) {
+        return String(n ?? 0).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",");
+      }
+
+      function fmtRuntime(secs) {
+        secs = Math.max(0, secs ?? 0);
+        const m = Math.floor(secs / 60), s = secs % 60;
+        return \`\${m}m \${s}s\`;
+      }
+
+      function fmtDueIn(ms) {
+        const s = Math.floor(ms / 1000), millis = ms % 1000;
+        return \`\${s}.\${String(millis).padStart(3, "0")}s\`;
+      }
+
+      function fmtAge(startedAt) {
+        if (!startedAt) return "n/a";
+        const secs = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+        return fmtRuntime(secs);
+      }
+
+      function compactSession(id) {
+        if (!id) return "n/a";
+        if (id.length > 10) return id.slice(0, 4) + "..." + id.slice(-6);
+        return id;
+      }
+
+      function pad(s, w, right) {
+        s = String(s ?? "").replace(/\\s+/g, " ").trim();
+        if (s.length > w) s = s.slice(0, w - 3) + "...";
+        return right ? s.padStart(w) : s.padEnd(w);
+      }
+
+      function stateColor(state, event) {
+        if (!state && !event) return gray;
+        const s = String(state ?? event ?? "").toLowerCase();
+        if (s.includes("error") || s.includes("fail") || s.includes("crash")) return red;
+        if (s.includes("retry") || s.includes("backoff")) return orange;
+        if (s.includes("complet") || s.includes("done") || s.includes("success")) return magenta;
+        if (s.includes("run") || s.includes("start") || s.includes("active")) return green;
+        return cyan;
+      }
+
+      function renderRateLimits(rl) {
+        if (!rl) return gray("unavailable");
+        const limitId = rl.limit_id || rl.limit_name || "unknown";
+        const fmtBucket = (b) => {
+          if (!b) return "n/a";
+          const rem = b.remaining ?? b.remaining_tokens;
+          const lim = b.limit ?? b.limit_tokens;
+          const reset = b.reset_in_seconds ?? b.resetInSeconds;
+          let s = (rem != null && lim != null) ? \`\${fmtCount(rem)}/\${fmtCount(lim)}\`
+                : rem != null ? \`remaining \${fmtCount(rem)}\`
+                : lim != null ? \`limit \${fmtCount(lim)}\` : "n/a";
+          if (reset != null) s += \` reset \${fmtCount(reset)}s\`;
+          return s;
+        };
+        const credits = rl.credits;
+        let creditsStr = "credits n/a";
+        if (credits) {
+          if (credits.unlimited) creditsStr = "credits unlimited";
+          else if (credits.has_credits && credits.balance != null) creditsStr = \`credits \${credits.balance.toFixed(2)}\`;
+          else if (credits.has_credits) creditsStr = "credits available";
+          else creditsStr = "credits none";
+        }
+        return yellow(limitId) + gray(" | ") + cyan(\`primary \${fmtBucket(rl.primary)}\`) +
+               gray(" | ") + cyan(\`secondary \${fmtBucket(rl.secondary)}\`) +
+               gray(" | ") + green(creditsStr);
+      }
+
+      function renderRunningRows(running, eventWidth) {
+        const W = { id: 8, stage: 14, pid: 8, age: 12, tok: 10, sess: 14 };
+        const hdr = [pad("ID",W.id), pad("STAGE",W.stage), pad("PID",W.pid),
+                     pad("AGE / TURN",W.age), pad("TOKENS",W.tok,true), pad("SESSION",W.sess),
+                     pad("EVENT", eventWidth)].join(" ");
+        const sep = "─".repeat(W.id+W.stage+W.pid+W.age+W.tok+W.sess+eventWidth+6);
+        let rows = [\`│   \${gray(hdr)}\`, \`│   \${gray(sep)}\`];
+
+        if (!running.length) {
+          rows.push("│  " + gray("No active agents"));
+          rows.push("│");
+          return rows;
+        }
+
+        for (const r of [...running].sort((a,b) => String(a.issue_identifier).localeCompare(String(b.issue_identifier)))) {
+          const id = pad(r.issue_identifier ?? "unknown", W.id);
+          const stage = pad(r.last_event ?? r.state ?? "unknown", W.stage);
+          const pid = pad(r.worker_host ?? "n/a", W.pid);
+          const age = pad(fmtAge(r.started_at) + (r.turn_count ? \` / \${r.turn_count}\` : ""), W.age);
+          const tok = pad(fmtCount(r.tokens?.total_tokens ?? 0), W.tok, true);
+          const sess = pad(compactSession(r.session_id), W.sess);
+          const evt = pad(r.last_message ?? r.last_event ?? "none", eventWidth);
+          const col = stateColor(r.state, r.last_event);
+          const dot = col === red ? red("●") : col === green ? green("●") : col === magenta ? magenta("●") : col === orange ? orange("●") : cyan("●");
+          rows.push(\`│ \${dot} \${cyan(id)} \${col(stage)} \${yellow(pid)} \${magenta(age)} \${yellow(tok)} \${cyan(sess)} \${col(evt)}\`);
+        }
+        rows.push("│");
+        return rows;
+      }
+
+      function renderRetryRows(retrying) {
+        if (!retrying.length) return ["│  " + gray("No queued retries")];
+        return [...retrying]
+          .sort((a, b) => (a.due_in_ms ?? 0) - (b.due_in_ms ?? 0))
+          .map((r) => {
+            const err = r.error ? " " + dim(\`error=\${String(r.error).replace(/\\s+/g,' ').slice(0,96)}\`) : "";
+            return \`│  \${orange("↻")} \${red(r.issue_identifier ?? "unknown")} \${yellow(\`attempt=\${r.attempt ?? 0}\`)}\${dim(" in ")}\${cyan(fmtDueIn(r.due_in_ms ?? 0))}\${err}\`;
+          });
+      }
+
+      function render(snapshot) {
+        const counts = snapshot.counts ?? {};
+        const health = snapshot.health ?? {};
+        const totals = snapshot.codex_totals ?? {};
+        const running = snapshot.running ?? [];
+        const retrying = snapshot.retrying ?? [];
+        const maxAgents = (counts.running ?? 0) + (health.available_slots ?? 0);
+        const polling = health.polling ?? "unknown";
+        const time = snapshot.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "n/a";
+
+        const EVENT_WIDTH = Math.max(20, Math.min(60, Math.floor((window.innerWidth - 200) / 8) - 66));
+
+        const lines = [];
+        lines.push(bold("╭─ S.T.A.R.K STATUS"));
+        lines.push(bold("│ Agents: ") + green(String(counts.running ?? 0)) + gray("/") + gray(String(maxAgents)));
+        lines.push(bold("│ Runtime: ") + magenta(fmtRuntime(totals.seconds_running)));
+        lines.push(bold("│ Tokens: ") + yellow(\`in \${fmtCount(totals.input_tokens)}\`) + gray(" | ") + yellow(\`out \${fmtCount(totals.output_tokens)}\`) + gray(" | ") + yellow(\`total \${fmtCount(totals.total_tokens)}\`));
+        lines.push(bold("│ Rate Limits: ") + renderRateLimits(snapshot.rate_limits));
+        lines.push(bold("│ Next refresh: ") + (polling === "checking" ? cyan("checking now…") : gray("n/a")));
+        lines.push(bold("│ Updated: ") + gray(time));
+        lines.push(bold("├─ Running"));
+        lines.push("│");
+        for (const row of renderRunningRows(running, EVENT_WIDTH)) lines.push(row);
+        lines.push(bold("├─ Backoff queue"));
+        lines.push("│");
+        for (const row of renderRetryRows(retrying)) lines.push(row);
+        lines.push(bold("╰─"));
+
+        const recentEvents = (snapshot.recent_events ?? []).slice(0, 12);
+        if (recentEvents.length) {
+          lines.push("");
+          lines.push(bold("╭─ Recent Events"));
+          for (const ev of recentEvents) {
+            const at = ev.at ? gray("  " + new Date(ev.at).toLocaleTimeString()) : "";
+            const issueLink = ev.issue_identifier ? " " + issueBtn(ev.issue_identifier) : "";
+            const msg = ev.message ? " " + esc(String(ev.message).slice(0, 80)) : "";
+            lines.push(\`│  \${cyan(ev.event ?? "")}\${at}\${issueLink}\${msg}\`);
+          }
+          lines.push(bold("╰─"));
+        }
+
+        document.getElementById("terminal").innerHTML = lines.join("\\n");
+        document.querySelectorAll(".issue-btn").forEach((btn) => {
+          btn.onclick = () => inspectIssue(btn.dataset.issue);
+        });
+      }
 
       async function loadState() {
         const res = await fetch(stateUrl);
@@ -224,64 +337,29 @@ function renderDashboard(snapshot: Record<string, any>): string {
       }
 
       async function refreshNow() {
-        $("status").textContent = "refreshing";
         await fetch("/api/v1/refresh", { method: "POST" });
         await loadState();
       }
 
       async function inspectIssue(identifier) {
         const res = await fetch("/api/v1/" + encodeURIComponent(identifier));
-        $("detail").textContent = JSON.stringify(await res.json(), null, 2);
+        const data = await res.json();
+        document.getElementById("detail-content").textContent = JSON.stringify(data, null, 2);
+        document.getElementById("detail-overlay").classList.add("open");
       }
 
-      function render(snapshot) {
-        $("status").textContent = (snapshot.health?.polling ?? "unknown") + " · " + new Date(snapshot.generated_at).toLocaleTimeString();
-        $("running-count").textContent = snapshot.counts?.running ?? 0;
-        $("retrying-count").textContent = snapshot.counts?.retrying ?? 0;
-        $("slots-count").textContent = snapshot.health?.available_slots ?? 0;
-        $("completed-count").textContent = snapshot.counts?.completed ?? 0;
-        $("tokens-count").textContent = snapshot.codex_totals?.total_tokens ?? 0;
-        $("health").textContent = JSON.stringify(snapshot.health ?? {}, null, 2);
-        $("totals").textContent = JSON.stringify(snapshot.codex_totals ?? {}, null, 2);
-        $("running").innerHTML = table(snapshot.running ?? [], ["issue_identifier", "state", "turn_count", "last_event", "workspace_path"], true);
-        $("retrying").innerHTML = table(snapshot.retrying ?? [], ["issue_identifier", "attempt", "due_in_ms", "error", "worker_host"], true);
-        $("events").innerHTML = (snapshot.recent_events ?? []).map((event) => \`
-          <li>
-            <strong>\${escapeHtml(event.event)}</strong>
-            <span class="muted">\${escapeHtml(event.at)}</span><br>
-            \${event.issue_identifier ? '<button data-issue="' + escapeHtml(event.issue_identifier) + '">' + escapeHtml(event.issue_identifier) + '</button>' : ''}
-            \${escapeHtml(event.message)}
-          </li>\`).join("") || '<li class="empty">No events yet.</li>';
-        document.querySelectorAll("[data-issue]").forEach((button) => {
-          button.onclick = () => inspectIssue(button.dataset.issue);
-        });
-      }
+      document.getElementById("detail-close").onclick = () => {
+        document.getElementById("detail-overlay").classList.remove("open");
+      };
+      document.getElementById("detail-overlay").onclick = (e) => {
+        if (e.target === e.currentTarget) e.currentTarget.classList.remove("open");
+      };
 
-      function table(rows, columns, linkIssue) {
-        if (!rows.length) return '<div class="empty">Nothing to show.</div>';
-        return \`<table><thead><tr>\${columns.map((column) => '<th>' + escapeHtml(column.replaceAll("_", " ")) + '</th>').join("")}</tr></thead><tbody>\${rows.map((row) => '<tr>' + columns.map((column) => cell(row, column, linkIssue)).join("") + '</tr>').join("")}</tbody></table>\`;
-      }
-
-      function cell(row, column, linkIssue) {
-        const value = row[column] ?? "";
-        if (column === "issue_identifier" && linkIssue) {
-          return '<td><button data-issue="' + escapeHtml(value) + '">' + escapeHtml(value) + '</button></td>';
-        }
-        return '<td>' + escapeHtml(typeof value === "object" ? JSON.stringify(value) : value) + '</td>';
-      }
-
-      $("refresh").onclick = refreshNow;
       render(window.__INITIAL_STATE__);
-      setInterval(() => loadState().catch((error) => { $("status").textContent = "offline"; console.error(error); }), 2000);
+      setInterval(() => loadState().catch(() => {
+        document.getElementById("terminal").innerHTML += "\\n" + \`<span class="red">connection lost — retrying…</span>\`;
+      }), 2000);
     </script>
   </body>
 </html>`;
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }
