@@ -39,10 +39,10 @@ export class Orchestrator extends EventEmitter {
     private readonly logger: Logger,
   ) {
     super();
-    this.refreshRuntimeConfig();
   }
 
   async start(): Promise<void> {
+    this.refreshRuntimeConfig();
     validateDispatchSettings(this.settingsProvider());
     await this.startupTerminalWorkspaceCleanup();
     this.scheduleTick(0);

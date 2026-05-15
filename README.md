@@ -23,7 +23,7 @@ npm run build
 ```sh
 export LINEAR_API_KEY=...
 npm run build
-node dist/cli.js --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
+node dist/src/cli.js --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
 
 Optional flags:

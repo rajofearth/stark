@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "description": "S.T.A.R.K - System for Task Automation, Reasoning & Knowledge",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "bin": {
-    "stark": "dist/cli.js"
+    "stark": "dist/src/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/cli.js",
+    "start": "node dist/src/cli.js",
     "fmt": "prettier --write .",
     "fmt:check": "prettier --check .",
     "lint": "tsc -p tsconfig.json --noEmit",
