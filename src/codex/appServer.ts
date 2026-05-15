@@ -176,8 +176,19 @@ export class CodexAppServer {
     if (method === "item/tool/call" && typeof id !== "undefined") {
       const params = payload.params as Record<string, unknown> | undefined;
       const toolName =
-        getPath<string>(params, ["toolCall", "name"]) ?? getPath<string>(params, ["name"]);
-      const args = getPath<unknown>(params, ["toolCall", "arguments"]) ?? params?.arguments;
+        getPath<string>(params, ["toolCall", "name"]) ??
+        getPath<string>(params, ["toolCall", "toolName"]) ??
+        getPath<string>(params, ["call", "name"]) ??
+        getPath<string>(params, ["call", "toolName"]) ??
+        getPath<string>(params, ["name"]) ??
+        getPath<string>(params, ["toolName"]);
+      const args =
+        getPath<unknown>(params, ["toolCall", "arguments"]) ??
+        getPath<unknown>(params, ["toolCall", "input"]) ??
+        getPath<unknown>(params, ["call", "arguments"]) ??
+        getPath<unknown>(params, ["call", "input"]) ??
+        params?.arguments ??
+        params?.input;
       const result = await this.toolExecutor.execute(toolName, args);
       this.send(process, { id, result });
       onMessage(

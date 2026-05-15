@@ -55,7 +55,10 @@ function normalizeLinearGraphqlArguments(args: unknown): {
   variables: Record<string, unknown>;
 } {
   if (typeof args === "string") {
-    const query = args.trim();
+    const trimmed = args.trim();
+    const decoded = tryParseJson(trimmed);
+    if (decoded !== null) return normalizeLinearGraphqlArguments(decoded);
+    const query = trimmed;
     if (!query) throw new Error("missing_query");
     return { query, variables: {} };
   }
@@ -68,6 +71,15 @@ function normalizeLinearGraphqlArguments(args: unknown): {
     throw new Error("invalid_variables");
   }
   return { query, variables: record.variables as Record<string, unknown> };
+}
+
+function tryParseJson(value: string): unknown | null {
+  if (!value.startsWith("{")) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function failure(payload: Record<string, unknown>): Record<string, unknown> {
