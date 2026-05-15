@@ -2,7 +2,19 @@
 export const messagesScript = `
 /* ─── Helpers ───────────────────────────────────────────────────────────── */
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function attr(s){ return esc(s).replace(/"/g,'&quot;'); }
 function fmtTime(d){ d=d||new Date(); return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); }
+function fileUrl(p){ return '/api/webchat/files?path=' + encodeURIComponent(String(p||'')); }
+function fileNameFromPath(p){ p=String(p||''); return p.split(/[\\/]/).filter(Boolean).pop() || p; }
+function trimLinkPunct(v){ const m=String(v||'').match(/^(.+?)([.,;:!?)]*)$/); return { href: m ? m[1] : v, trail: m ? m[2] : '' }; }
+function buildAnchor(label, href, download) {
+  const safeHref = String(href||'');
+  const attrs = download ? ' download' : ' target="_blank" rel="noreferrer"';
+  return \`<a class="md-link" href="\${attr(safeHref)}"\${attrs}>\${esc(label || safeHref)}</a>\`;
+}
+function buildFileAnchor(path) {
+  return buildAnchor(fileNameFromPath(path) + ' ↧', fileUrl(path), true);
+}
 
 /* ─── Syntax highlighter ────────────────────────────────────────────────── */
 function hlCode(raw) {
@@ -33,6 +45,16 @@ function renderMd(text) {
     \`<pre style="background:var(--bg-2);border-radius:var(--r);padding:8px 10px;overflow-x:auto;font-family:Menlo,Monaco,Consolas,monospace;font-size:10px;color:var(--t);">\${code}</pre>\`);
   // inline code
   h = h.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
+  // markdown links + auto-links
+  h = h.replace(/\\[([^\\]]+)\\]\\(((?:https?:\\/\\/|\\/)[^)\\s]+)\\)/g, (m,label,href) => {
+    return href.startsWith('http') ? buildAnchor(label, href, false) : buildFileAnchor(href);
+  });
+  h = h.replace(/(^|[\\s(])((?:https?:\\/\\/)[^\\s<]+)/g, (m,prefix,url) => {
+    const t = trimLinkPunct(url); return prefix + buildAnchor(t.href, t.href, false) + t.trail;
+  });
+  h = h.replace(/(^|[\\s(])((?:\\/Users|\\/Volumes|\\/private|\\/tmp)\\/[^\\s<)]*?\\.(?:docx|pdf|txt|md|csv|json|xlsx|png|jpe?g|gif|webp|zip|html?))/gi, (m,prefix,path) => {
+    const t = trimLinkPunct(path); return prefix + buildFileAnchor(t.href) + t.trail;
+  });
   // bold / italic
   h = h.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
   h = h.replace(/\\*(.+?)\\*/g,   '<em>$1</em>');
@@ -102,6 +124,20 @@ function buildAgentMsg(name, initials, content, time, opts) {
     <div class="msg-agent-body">
       <div class="msg-agent-header"><strong>\${esc(name)}</strong> · \${fmtTime(time)}</div>
       \${thinking}\${codeBlock}\${mdContent}\${badge}
+    </div>
+  </div>\`;
+}
+
+/* ─── Runtime/tool event block ─────────────────────────────────────────── */
+function buildRuntimeBlock(opts) {
+  opts = opts || {};
+  const cls = opts.status === 'failed' || opts.kind === 'error' ? ' failed' : '';
+  const icon = opts.status === 'failed' || opts.kind === 'error' ? '!' : (opts.kind === 'done' ? '✓' : '•');
+  return \`<div class="runtime-block\${cls}">
+    <div class="runtime-dot">\${icon}</div>
+    <div class="runtime-body">
+      <div class="runtime-title">\${esc(opts.title || 'Runtime event')}</div>
+      \${opts.detail ? \`<div class="runtime-detail">\${esc(opts.detail)}</div>\` : ''}
     </div>
   </div>\`;
 }

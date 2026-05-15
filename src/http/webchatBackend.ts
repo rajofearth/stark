@@ -1,12 +1,13 @@
 import type { Express, Response } from "express";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Duplex } from "node:stream";
 import { URL } from "node:url";
 import type { CodexAppServer, CodexSession } from "../codex/appServer.js";
 import type { Logger } from "../logging/logger.js";
+import { ensureInsideRoot } from "../pathSafety.js";
 import type { RuntimeEvent, Settings } from "../types.js";
 
 interface WebchatConversation {
@@ -73,6 +74,27 @@ export class WebchatBackend {
           this.logger.debug("webchat_http_event", { event: event.event, threadId: conv.threadId });
         });
         response.json({ conversation: publicConversation(conv), content: assistantText });
+      });
+    });
+
+    app.get("/api/webchat/files", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const rawPath = stringOrDefault(request.query.path, "");
+        if (!rawPath) {
+          response
+            .status(400)
+            .json({ error: { code: "missing_path", message: "File path is required" } });
+          return;
+        }
+        const safePath = await ensureInsideRoot(rawPath, this.settingsProvider().workspace.root);
+        const fileStat = await stat(safePath).catch(() => null);
+        if (!fileStat?.isFile()) {
+          response
+            .status(404)
+            .json({ error: { code: "file_not_found", message: "File not found" } });
+          return;
+        }
+        response.download(safePath, basename(safePath));
       });
     });
   }
@@ -153,12 +175,11 @@ export class WebchatBackend {
         ws.send({ event: "message.started", conversation: publicConversation(conv) });
         let streamedText = "";
         const fullText = await this.runTurn(conv, text, (event) => {
+          const webEvent = runtimeEventForWebchat(event);
+          if (webEvent) ws.send(webEvent);
+          const plan = extractPlan(event.payload);
+          if (plan) ws.send({ event: "plan.update", plan });
           const extracted = extractAssistantText(event.payload, text);
-          if (!extracted) {
-            const plan = extractPlan(event.payload);
-            if (plan) ws.send({ event: "plan.update", plan });
-            return;
-          }
           const delta = nextAssistantDelta(streamedText, extracted);
           if (!delta) return;
           streamedText += delta;
@@ -374,11 +395,248 @@ function compactRuntimeEvent(event: RuntimeEvent): Record<string, unknown> {
   };
 }
 
+function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | null {
+  const payload = event.payload;
+  const method = firstString(path(payload, ["method"]), path(payload, ["type"]), event.event);
+  if (!method) return null;
+  if (event.event === "session_started" || event.event === "turn_completed") return null;
+  if (event.event === "turn_failed" || event.event === "turn_cancelled") {
+    return {
+      event: "runtime.activity",
+      kind: "error",
+      title: humanizeEventName(event.event),
+      detail: extractErrorText(payload),
+    };
+  }
+  if (event.event === "approval_required" || event.event === "approval_auto_approved") {
+    return {
+      event: "runtime.activity",
+      kind: event.event === "approval_required" ? "approval" : "approved",
+      title: event.event === "approval_required" ? "Approval required" : "Approved automatically",
+      detail: toolOrCommandName(payload) || humanizeEventName(method),
+    };
+  }
+  if (
+    event.event === "tool_call_completed" ||
+    event.event === "tool_call_failed" ||
+    isToolOrCommandEvent(payload)
+  ) {
+    return {
+      event: "runtime.tool",
+      status:
+        event.event === "tool_call_failed" || /failed|error/i.test(method) ? "failed" : "completed",
+      title: toolOrCommandName(payload) || humanizeEventName(method),
+      detail: summarizeRuntimePayload(payload),
+    };
+  }
+  if (
+    isAssistantMessageEvent(payload) ||
+    isUserAuthoredEvent(payload) ||
+    isUserInputEvent(payload)
+  ) {
+    return null;
+  }
+  if (
+    isIgnorableRuntimeEvent(method) ||
+    isNoisyRuntimeEvent(method, payload) ||
+    isReasoningEvent(payload)
+  ) {
+    return null;
+  }
+  return null;
+}
+
 function extractAssistantText(value: unknown, userText = ""): string {
-  if (isUserAuthoredEvent(value) || isUserInputEvent(value)) return "";
-  const text = extractText(value);
+  if (!isAssistantMessageEvent(value)) return "";
+  if (isUserAuthoredEvent(value) || isUserInputEvent(value) || isToolOrCommandEvent(value))
+    return "";
+  const text = extractAssistantMessageText(value);
   if (isEchoOfUserInput(text, userText)) return "";
   return text;
+}
+
+function isAssistantMessageEvent(value: unknown): boolean {
+  const type = firstString(
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+    path(value, ["type"]),
+  ).toLowerCase();
+  const method = firstString(path(value, ["method"]), path(value, ["type"])).toLowerCase();
+  if (isToolOrCommandType(type || method) || /reasoning|thought|analysis/.test(type)) return false;
+  const role = firstString(
+    path(value, ["role"]),
+    path(value, ["params", "role"]),
+    path(value, ["message", "role"]),
+    path(value, ["params", "message", "role"]),
+    path(value, ["params", "item", "role"]),
+    path(value, ["params", "item", "author", "role"]),
+    path(value, ["params", "item", "message", "role"]),
+    path(value, ["item", "role"]),
+    path(value, ["item", "author", "role"]),
+    path(value, ["author", "role"]),
+  ).toLowerCase();
+  if (role === "assistant" || role === "agent") return true;
+  if (type === "message") {
+    const content =
+      path(value, ["params", "item", "content"]) ??
+      path(value, ["item", "content"]) ??
+      path(value, ["content"]);
+    if (assistantContentToText(content)) return true;
+  }
+  return /assistant|agent[ _-]?message|message[ _-]?delta|response[ _-]?delta|output[ _-]?delta|output_text/.test(
+    method,
+  );
+}
+
+function extractAssistantMessageText(value: unknown): string {
+  const direct = firstString(
+    path(value, ["delta"]),
+    path(value, ["message", "content"]),
+    path(value, ["params", "delta"]),
+    path(value, ["params", "message", "content"]),
+  );
+  if (direct) return direct;
+  const itemContent =
+    path(value, ["params", "item", "content"]) ??
+    path(value, ["item", "content"]) ??
+    path(value, ["content"]);
+  const text = assistantContentToText(itemContent);
+  if (text) return text;
+  return firstString(
+    path(value, ["text"]),
+    path(value, ["params", "text"]),
+    path(value, ["params", "item", "text"]),
+  );
+}
+
+function assistantContentToText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (!entry || typeof entry !== "object") return "";
+      const record = entry as Record<string, unknown>;
+      const type = firstString(record.type, record.kind).toLowerCase();
+      if (type && type !== "text" && type !== "output_text" && type !== "assistant_text") return "";
+      return firstString(record.text, record.content, record.delta);
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function isToolOrCommandEvent(value: unknown): boolean {
+  const method = firstString(path(value, ["method"]), path(value, ["type"]));
+  const type = firstString(
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+    path(value, ["params", "type"]),
+    path(value, ["type"]),
+  );
+  return isToolOrCommandType(method) || isToolOrCommandType(type);
+}
+
+function isToolOrCommandType(value: string): boolean {
+  return /tool|command|exec|shell|patch|file_change|function_call|local_shell|stdout|stderr/i.test(
+    value,
+  );
+}
+
+function isIgnorableRuntimeEvent(method: string): boolean {
+  return /turn\/(completed|failed|cancelled)|session|initialized|heartbeat|^item\/(started|updated|completed)$/i.test(
+    method,
+  );
+}
+
+function isNoisyRuntimeEvent(method: string, value: unknown): boolean {
+  const type = firstString(
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+    path(value, ["type"]),
+  );
+  const text = `${method} ${type}`.toLowerCase();
+  return /status|rate.?limit|token.?usage|usage.?updated|plan.?updated|mcp|startup|started|agent[ _-]?message|message[ _-]?delta|response[ _-]?delta/.test(
+    text,
+  );
+}
+
+function isReasoningEvent(value: unknown): boolean {
+  const type = firstString(
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+    path(value, ["type"]),
+  ).toLowerCase();
+  return /reasoning|thought|analysis/.test(type);
+}
+
+function toolOrCommandName(value: unknown): string {
+  const command = path(value, ["params", "command"]);
+  if (Array.isArray(command) && command.length)
+    return command.map((part) => String(part)).join(" ");
+  return firstString(
+    path(value, ["params", "tool"]),
+    path(value, ["params", "toolName"]),
+    path(value, ["params", "tool_name"]),
+    path(value, ["params", "name"]),
+    path(value, ["params", "item", "name"]),
+    path(value, ["params", "item", "toolName"]),
+    path(value, ["params", "item", "command"]),
+    path(value, ["params", "call", "name"]),
+    path(value, ["params", "toolCall", "name"]),
+    path(value, ["method"]),
+  );
+}
+
+function summarizeRuntimePayload(value: unknown): string {
+  const result =
+    path(value, ["result"]) ??
+    path(value, ["params", "result"]) ??
+    path(value, ["params", "item", "result"]) ??
+    path(value, ["params", "output"]) ??
+    path(value, ["params", "item", "output"]);
+  const text = firstString(
+    extractErrorText(value),
+    typeof result === "string" ? result : "",
+    path(value, ["params", "summary"]),
+    path(value, ["params", "item", "summary"]),
+    path(value, ["params", "item", "status"]),
+  );
+  return truncateText(
+    text || humanizeEventName(firstString(path(value, ["method"]), path(value, ["type"]))),
+    220,
+  );
+}
+
+function extractErrorText(value: unknown): string {
+  return firstString(
+    path(value, ["error", "message"]),
+    path(value, ["error"]),
+    path(value, ["params", "error", "message"]),
+    path(value, ["params", "error"]),
+    path(value, ["params", "item", "error"]),
+  );
+}
+
+function humanizeEventName(value: string): string {
+  const cleaned = String(value || "")
+    .replace(/^item\//, "")
+    .replace(/^turn\//, "")
+    .replace(/[._/-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .trim();
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : "Runtime event";
+}
+
+function compactSession(value: unknown): string {
+  const text = String(value || "");
+  return text.length > 18 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function isUserAuthoredEvent(value: unknown): boolean {

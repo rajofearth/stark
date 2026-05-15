@@ -80,7 +80,7 @@ function tasksPane(): string {
     </div>
 
     <div id="plan-list">
-      <div class="note-box">When Codex proposes a plan, it will appear here and update while the response streams.</div>
+      <div class="note-box">When Stark proposes a plan, it will appear here and update while the response streams.</div>
     </div>
   </div>`;
 }
@@ -97,7 +97,7 @@ function agentsPane(): string {
     </div>
 
     <div id="activity-feed">
-      ${activityItem("CX", "Codex", "Direct webchat ready", "now", true)}
+      ${activityItem("S", "Stark", "Direct webchat ready", "now", true)}
     </div>
 
     <div class="rp-sec" style="padding-bottom:8px;">
@@ -108,7 +108,7 @@ function agentsPane(): string {
     </div>
 
     <div id="agent-list">
-      ${agentItem("CX", "Codex")}
+      ${agentItem("S", "Stark")}
     </div>
 
     <!-- Live orchestrator (shown when real agents are running) -->
@@ -127,7 +127,7 @@ function agentsPane(): string {
     </div>
     <div>
       <div class="sub-label">Workspace</div>
-      <div class="ctx-row">${fileIcon} Direct Codex webchat</div>
+      <div class="ctx-row">${fileIcon} Direct Stark webchat</div>
     </div>
   </div>`;
 }
@@ -140,7 +140,7 @@ function detailsPane(): string {
       <span class="rp-label">Conversation Details</span>
     </div>
     <div class="det-row"><span class="det-k">Created</span>      <span class="det-v" id="det-created">—</span></div>
-    <div class="det-row"><span class="det-k">Model</span>        <span class="det-v">Codex App Server</span></div>
+    <div class="det-row"><span class="det-k">Model</span>        <span class="det-v">Stark App Server</span></div>
     <div class="det-row"><span class="det-k">Workspace</span>    <span class="det-v" id="det-workspace">—</span></div>
     <div class="det-row"><span class="det-k">Tracker</span>      <span class="det-v" id="det-tracker">—</span></div>
     <div class="det-row"><span class="det-k">Status</span>       <span class="det-v" id="det-status">—</span></div>
@@ -149,11 +149,11 @@ function detailsPane(): string {
     <div class="det-row"><span class="det-k">Runtime</span>      <span class="det-v" id="det-runtime">—</span></div>
     <div class="det-row">
       <span class="det-k">Pipeline</span>
-      <span class="det-v" style="color:var(--t-m);font-size:10px;">Direct Codex</span>
+      <span class="det-v" style="color:var(--t-m);font-size:10px;">Direct Stark</span>
     </div>
     <div class="note-box">
-      <strong style="color:var(--t-s);">Direct Codex session.</strong><br>
-      Conversations are cached in IndexedDB and resumed by Codex thread ID.
+      <strong style="color:var(--t-s);">Direct Stark session.</strong><br>
+      Conversations are cached in IndexedDB and resumed by Stark thread ID.
     </div>
   </div>`;
 }

@@ -71,11 +71,16 @@ function handleServerEvent(pkt) {
       updatePlanPanelFromPlan(pkt.plan);
       break;
 
+    case 'runtime.activity':
+    case 'runtime.tool':
+      appendRuntimeEvent(pkt);
+      break;
+
     case 'message.error':
     case 'turn_failed':
       hideTyping();
       App.pendingAssistant = null;
-      inject(wrap, buildSysMsg('Codex run failed', pkt.message || pkt.reason || 'An error occurred.', [], true));
+      inject(wrap, buildSysMsg('Stark run failed', pkt.message || pkt.reason || 'An error occurred.', [], true));
       scrollBottom(true);
       break;
 

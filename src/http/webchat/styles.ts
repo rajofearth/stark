@@ -416,6 +416,24 @@ html, body { height: 100%; overflow: hidden; }
 .md-content code { background: var(--bg-3); border-radius: 2px; padding: 1px 4px; font-family: "Menlo","Monaco","Consolas",monospace; font-size: 10px; color: var(--t-p); }
 .md-content strong { color: var(--t-p); font-weight: 600; }
 .md-content blockquote { border-left: 2px solid var(--bd-1); padding: 3px 10px; color: var(--t-s); margin: 5px 0; }
+.md-link { color: var(--t-p); text-decoration: underline; text-underline-offset: 2px; }
+.md-link:hover { color: var(--w); }
+
+/* Runtime/tool events */
+.runtime-events { display: flex; flex-direction: column; gap: 5px; margin: 5px 0 7px; }
+.runtime-block {
+  display: flex; align-items: flex-start; gap: 7px;
+  border: 1px solid var(--bd); border-radius: var(--r);
+  background: var(--bg-1); padding: 6px 8px;
+}
+.runtime-block.failed { border-color: var(--bd-1); }
+.runtime-dot {
+  width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--bd-1); color: var(--t-s); font-size: 10px; margin-top: 1px;
+}
+.runtime-title { font-size: 11px; font-weight: 600; color: var(--t); }
+.runtime-detail { font-size: 10px; color: var(--t-m); margin-top: 1px; word-break: break-word; }
 
 /* ── Buttons ────────────────────────────────────────────── */
 .btn {

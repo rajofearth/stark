@@ -98,7 +98,7 @@ async function mergeServerConvs(convs) {
 
 function updateHeader(conv) {
   document.getElementById('chat-title-text').textContent = conv ? conv.title : 'New Conversation';
-  document.getElementById('meta-agents').textContent = 'Direct Codex';
+  document.getElementById('meta-agents').textContent = 'Direct Stark';
   document.getElementById('meta-time').textContent = conv ? timeAgo(conv.updatedAt) : '—';
 }
 
@@ -110,7 +110,7 @@ async function loadConv(id) {
   msgs.forEach(m => {
     if (m.type === 'user') inject(wrap, buildUserMsg(m.text || '', new Date(m.ts || Date.now())));
     else if (m.type === 'assistant') {
-      inject(wrap, buildAgentMsg('Codex', 'CX', m.text || '', new Date(m.ts || Date.now())));
+      inject(wrap, buildAgentMsg('Stark', 'S', m.text || '', new Date(m.ts || Date.now())));
       updatePlanPanelFromText(m.text || '');
     }
     else if (m.html) inject(wrap, m.html);
@@ -154,7 +154,7 @@ function startAssistantMessage() {
   const wrap = document.getElementById('messages-wrap');
   const id = 'assistant-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   App.pendingAssistant = { id, text: '' };
-  inject(wrap, buildAgentMsg('Codex', 'CX', '', new Date()));
+  inject(wrap, buildAgentMsg('Stark', 'S', '', new Date()));
   const node = wrap.lastElementChild;
   if (node) node.dataset.pendingAssistant = id;
   scrollBottom(true);
@@ -175,6 +175,31 @@ function appendAssistantDelta(delta) {
   content.innerHTML = renderMd(App.pendingAssistant.text);
   updatePlanPanelFromText(App.pendingAssistant.text);
   scrollBottom(true);
+}
+
+function appendRuntimeEvent(pkt) {
+  if (!App.pendingAssistant) startAssistantMessage();
+  const node = document.querySelector('[data-pending-assistant="' + App.pendingAssistant.id + '"]');
+  if (!node) return;
+  const body = node.querySelector('.msg-agent-body');
+  let events = body.querySelector('.runtime-events');
+  if (!events) {
+    events = document.createElement('div');
+    events.className = 'runtime-events';
+    body.appendChild(events);
+  }
+  inject(events, buildRuntimeBlock(pkt));
+  appendActivity(pkt);
+  scrollBottom(true);
+}
+
+function appendActivity(pkt) {
+  const feed = document.getElementById('activity-feed');
+  if (!feed) return;
+  const item = document.createElement('div');
+  item.className = 'act-item';
+  item.innerHTML = '<div class="act-av">S</div><div style="flex:1;"><div class="act-name">Stark</div><div class="act-desc">' + esc(pkt.title || pkt.event || 'Runtime event') + '</div></div><div class="act-time">now</div>';
+  feed.prepend(item);
 }
 
 async function finishAssistantMessage(content) {
@@ -205,7 +230,7 @@ function updatePlanPanelFromPlan(plan) {
     if (typeof item === 'string') return { title: item, done: false };
     return { title: item.title || item.step || item.task || ('Step ' + (i + 1)), done: !!(item.done || item.completed || item.status === 'completed') };
   }).filter(i => i.title);
-  renderPlanPanel(normalized, 'CODEX PLAN');
+  renderPlanPanel(normalized, 'STARK PLAN');
 }
 
 function updatePlanPanelFromText(text) {
@@ -244,7 +269,7 @@ function renderPlanPanel(items, source) {
   document.getElementById('progress-bar').style.width = pct + '%';
   const src = document.getElementById('plan-source');
   if (src) src.textContent = source || 'AUTO-GENERATED';
-  list.innerHTML = '<div class="task-sec"><div class="task-sec-hdr"><span class="task-num">1</span><span class="task-title">Codex Plan</span><span class="task-cnt">' + done + '/' + total + '</span></div>' +
+  list.innerHTML = '<div class="task-sec"><div class="task-sec-hdr"><span class="task-num">1</span><span class="task-title">Stark Plan</span><span class="task-cnt">' + done + '/' + total + '</span></div>' +
     items.map(i => '<div class="task-row"><div class="task-chk' + (i.done ? ' done' : '') + '"></div><div><div class="task-text">' + esc(i.title) + '</div></div></div>').join('') +
     '</div>';
 }
@@ -266,7 +291,7 @@ async function sendMsg(text) {
   dbAddMsg({ convId: App.conv, type: 'user', text, ts: nowMs() }).catch(()=>{});
   scrollBottom(true);
 
-  showTyping('Codex', 'CX');
+  showTyping('Stark', 'S');
   const payload = { type: 'message.send', convId: App.conv, threadId: conv.threadId || '', title: conv.title, text };
   const sent = wsSend(payload);
   if (!sent) {
@@ -282,7 +307,7 @@ async function sendMsg(text) {
       await finishAssistantMessage(data.content || '');
     } catch(e) {
       hideTyping();
-      inject(wrap, buildSysMsg('Codex is not connected', e.message || 'Unable to send the message.', [], true));
+      inject(wrap, buildSysMsg('Stark is not connected', e.message || 'Unable to send the message.', [], true));
       scrollBottom(true);
     }
   }
