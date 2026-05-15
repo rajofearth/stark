@@ -16,6 +16,17 @@ import type { WorkspaceManager } from "./workspace/workspace.js";
 
 const continuationRetryDelayMs = 1_000;
 const failureRetryBaseMs = 10_000;
+const maxRecentEvents = 200;
+
+interface RecentEvent {
+  at: string;
+  event: string;
+  issue_id: string | null;
+  issue_identifier: string | null;
+  message: string;
+  session_id?: string | null;
+  worker_host?: string | null;
+}
 
 export class Orchestrator extends EventEmitter {
   pollIntervalMs = 30_000;
@@ -30,6 +41,7 @@ export class Orchestrator extends EventEmitter {
   codexRateLimits: unknown = null;
   private tickTimer: NodeJS.Timeout | null = null;
   private stopped = false;
+  private recentEvents: RecentEvent[] = [];
 
   constructor(
     private settingsProvider: () => Settings,
@@ -70,7 +82,21 @@ export class Orchestrator extends EventEmitter {
     const now = Date.now();
     return {
       generated_at: new Date().toISOString(),
-      counts: { running: this.running.size, retrying: this.retryAttempts.size },
+      health: {
+        polling: this.pollCheckInProgress ? "checking_now" : "waiting",
+        next_poll_due_at: this.nextPollDueAtMs
+          ? new Date(this.nextPollDueAtMs).toISOString()
+          : null,
+        poll_interval_ms: this.pollIntervalMs,
+        max_concurrent_agents: this.maxConcurrentAgents,
+        available_slots: this.availableSlots(),
+      },
+      counts: {
+        running: this.running.size,
+        retrying: this.retryAttempts.size,
+        completed: this.completed.size,
+        claimed: this.claimed.size,
+      },
       running: [...this.running.values()].map((entry) => ({
         issue_id: entry.issue.id,
         issue_identifier: entry.identifier,
@@ -93,7 +119,8 @@ export class Orchestrator extends EventEmitter {
         issue_id: entry.issueId,
         issue_identifier: entry.identifier,
         attempt: entry.attempt,
-        due_at: new Date(Date.now() + Math.max(0, entry.dueAtMs - now)).toISOString(),
+        due_at: new Date(entry.dueAtMs).toISOString(),
+        due_in_ms: Math.max(0, entry.dueAtMs - now),
         error: entry.error,
         worker_host: entry.workerHost,
       })),
@@ -104,6 +131,7 @@ export class Orchestrator extends EventEmitter {
         seconds_running: this.codexTotals.secondsRunning + this.activeRuntimeSeconds(),
       },
       rate_limits: this.codexRateLimits,
+      recent_events: this.recentEvents.slice(0, 50),
     };
   }
 
@@ -128,7 +156,9 @@ export class Orchestrator extends EventEmitter {
             error: retry.error,
           }
         : null,
-      recent_events: [],
+      recent_events: this.recentEvents
+        .filter((event) => event.issue_identifier === identifier)
+        .slice(0, 25),
       last_error: retry?.error ?? null,
       tracked: {},
     };
@@ -212,6 +242,9 @@ export class Orchestrator extends EventEmitter {
           if (current) {
             current.workerHost = info.workerHost;
             current.workspacePath = info.workspacePath;
+            this.recordEvent("workspace_ready", issue, `Workspace ready at ${info.workspacePath}`, {
+              workerHost: info.workerHost,
+            });
             this.emit("updated");
           }
         },
@@ -227,6 +260,14 @@ export class Orchestrator extends EventEmitter {
       attempt: attempt ?? "first",
       worker_host: workerHost ?? "local",
     });
+    this.recordEvent(
+      "dispatch",
+      issue,
+      `Dispatched ${issue.identifier} to ${workerHost ?? "local"}`,
+      {
+        workerHost: workerHost === null ? null : workerHost,
+      },
+    );
   }
 
   private handleWorkerExit(issueId: string, reason: "normal" | string): void {
@@ -250,6 +291,14 @@ export class Orchestrator extends EventEmitter {
         workspacePath: entry.workspacePath,
       });
     }
+    this.recordEvent(
+      reason === "normal" ? "worker_completed" : "worker_failed",
+      entry.issue,
+      reason === "normal"
+        ? "Worker completed; scheduling continuation check"
+        : `Worker failed: ${reason}`,
+      { sessionId: entry.sessionId, workerHost: entry.workerHost },
+    );
     this.emit("updated");
   }
 
@@ -298,6 +347,15 @@ export class Orchestrator extends EventEmitter {
           workerHost: entry.workerHost,
           workspacePath: entry.workspacePath,
         });
+        this.recordEvent(
+          "worker_stalled",
+          entry.issue,
+          `Stalled for ${elapsed}ms; scheduled retry`,
+          {
+            sessionId: entry.sessionId,
+            workerHost: entry.workerHost,
+          },
+        );
       }
     }
   }
@@ -317,6 +375,14 @@ export class Orchestrator extends EventEmitter {
     this.retryAttempts.delete(issueId);
     if (cleanupWorkspace)
       await this.workspaceManager.removeIssueWorkspaces(entry.identifier, entry.workerHost);
+    this.recordEvent(
+      cleanupWorkspace ? "terminated_terminal" : "terminated_non_active",
+      entry.issue,
+      cleanupWorkspace
+        ? "Stopped run and cleaned workspace"
+        : "Stopped run without workspace cleanup",
+      { sessionId: entry.sessionId, workerHost: entry.workerHost },
+    );
   }
 
   private scheduleIssueRetry(
@@ -352,6 +418,16 @@ export class Orchestrator extends EventEmitter {
       workspacePath: metadata.workspacePath ?? null,
     });
     this.claimed.add(issueId);
+    this.recordEvent(
+      "retry_scheduled",
+      null,
+      `Scheduled retry for ${metadata.identifier} attempt ${attempt}`,
+      {
+        issueId,
+        issueIdentifier: metadata.identifier,
+        workerHost: metadata.workerHost ?? null,
+      },
+    );
   }
 
   private async handleRetry(issueId: string): Promise<void> {
@@ -363,6 +439,16 @@ export class Orchestrator extends EventEmitter {
       const issue = candidates.find((candidate) => candidate.id === issueId);
       if (!issue || !this.shouldDispatch(issue)) {
         this.claimed.delete(issueId);
+        this.recordEvent(
+          "retry_released",
+          null,
+          `Released ${retry.identifier}; no longer dispatchable`,
+          {
+            issueId,
+            issueIdentifier: retry.identifier,
+            workerHost: retry.workerHost,
+          },
+        );
         return;
       }
       if (this.availableSlots() === 0) {
@@ -375,6 +461,14 @@ export class Orchestrator extends EventEmitter {
         return;
       }
       this.claimed.delete(issueId);
+      this.recordEvent(
+        "retry_dispatch",
+        issue,
+        `Retrying ${issue.identifier} attempt ${retry.attempt}`,
+        {
+          workerHost: retry.workerHost,
+        },
+      );
       this.dispatchIssue(issue, retry.attempt, retry.workerHost);
     } catch (reason) {
       this.scheduleIssueRetry(issueId, retry.attempt + 1, {
@@ -458,7 +552,34 @@ export class Orchestrator extends EventEmitter {
     }
     const rateLimits = extractRateLimits(update.payload);
     if (rateLimits) this.codexRateLimits = rateLimits;
+    this.recordEvent(update.event, entry.issue, update.event, {
+      sessionId: entry.sessionId,
+      workerHost: entry.workerHost,
+    });
     this.emit("updated");
+  }
+
+  private recordEvent(
+    event: string,
+    issue: Issue | null,
+    message: string,
+    metadata: {
+      issueId?: string | null;
+      issueIdentifier?: string | null;
+      sessionId?: string | null;
+      workerHost?: string | null;
+    } = {},
+  ): void {
+    this.recentEvents.unshift({
+      at: new Date().toISOString(),
+      event,
+      issue_id: issue?.id ?? metadata.issueId ?? null,
+      issue_identifier: issue?.identifier ?? metadata.issueIdentifier ?? null,
+      message,
+      session_id: metadata.sessionId,
+      worker_host: metadata.workerHost,
+    });
+    this.recentEvents = this.recentEvents.slice(0, maxRecentEvents);
   }
 
   private recordSessionCompletionTotals(entry: RunningEntry): void {

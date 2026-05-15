@@ -31,6 +31,18 @@ Optional flags:
 - `--logs-root <path>` writes logs to `<path>/stark.log`.
 - `--port <port>` enables the dashboard and JSON API at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+## Dashboard
+
+The dashboard is designed for operating active S.T.A.R.K runs. It shows:
+
+- runtime health, poll status, capacity, and token totals
+- active agent runs with workspace/session details
+- retry queue timing and errors
+- recent orchestration and Codex events
+- issue detail inspection by clicking an issue identifier
+
+The page refreshes itself every two seconds and includes a manual refresh button that triggers an immediate poll/reconciliation cycle.
+
 ## Cross-Platform Notes
 
 On macOS and POSIX hosts, local hooks run through `sh -lc`. On Windows, local hooks run through PowerShell. Write `WORKFLOW.md` hooks for the target host shell, or use SSH workers for POSIX remote execution.
