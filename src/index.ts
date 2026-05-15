@@ -24,6 +24,7 @@ export class StarkRuntime {
   private tracker: TrackerAdapter;
   private workspaceManager: WorkspaceManager;
   private orchestrator: Orchestrator;
+  private codex: CodexAppServer;
   private httpServer: HttpServer | null = null;
   private dashboardUrlValue: string | null = null;
   private logger: Logger;
@@ -35,13 +36,13 @@ export class StarkRuntime {
     this.workspaceManager = new WorkspaceManager(settingsProvider, this.logger);
     this.tracker = createTracker(settingsProvider);
     const tools = new DynamicToolExecutor(this.tracker);
-    const codex = new CodexAppServer(settingsProvider, this.logger, tools);
+    this.codex = new CodexAppServer(settingsProvider, this.logger, tools);
     const runner = new AgentRunner(
       settingsProvider,
       this.workflowStore,
       this.workspaceManager,
       this.tracker,
-      codex,
+      this.codex,
       this.logger,
     );
     this.orchestrator = new Orchestrator(
@@ -62,6 +63,7 @@ export class StarkRuntime {
     if (settings.observability.dashboardEnabled && typeof port === "number") {
       this.httpServer = new HttpServer(
         this.orchestrator,
+        this.codex,
         () => this.getSettings(),
         this.logger,
         port,

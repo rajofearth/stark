@@ -4,15 +4,19 @@ export const wsScript = `
 const WS_PATH  = '/api/webchat/stream';
 const HTTP_PATH = '/api/webchat/send';
 
-function connectWS(convId) {
+function connectWS() {
   if (App.ws) { try { App.ws.close(); } catch(e){} App.ws = null; }
   setBadge('connecting');
   try {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(proto + '://' + location.host + WS_PATH + '?conv=' + convId);
+    const ws = new WebSocket(proto + '://' + location.host + WS_PATH);
     App.ws = ws;
 
-    ws.addEventListener('open', () => setBadge('ok'));
+    ws.addEventListener('open', () => {
+      setBadge('ok');
+      const conv = App.convs.get(App.conv);
+      if (conv && conv.threadId) wsSend({ type: 'conversation.resume', threadId: conv.threadId, title: conv.title });
+    });
 
     ws.addEventListener('message', e => {
       let pkt; try { pkt = JSON.parse(e.data); } catch { return; }
@@ -22,7 +26,7 @@ function connectWS(convId) {
     ws.addEventListener('close', () => {
       App.ws = null;
       setBadge('off');
-      setTimeout(() => { if (App.conv === convId) connectWS(convId); }, 3000);
+      setTimeout(() => { if (!App.ws) connectWS(); }, 2500);
     });
 
     ws.addEventListener('error', () => { setBadge('err'); });
@@ -40,56 +44,49 @@ function wsSend(payload) {
 function handleServerEvent(pkt) {
   const wrap = document.getElementById('messages-wrap');
   switch (pkt.event) {
-
-    case 'session_started':
-      showTyping(pkt.agentName || 'S.T.A.R.K', pkt.agentInitials || 'S');
+    case 'connected':
+      mergeServerConvs(pkt.conversations || []);
       break;
 
-    case 'turn_completed':
-    case 'notification': {
-      hideTyping();
-      const html = pkt.html || buildAgentMsg(
-        pkt.agentName || 'S.T.A.R.K', pkt.agentInitials || 'S',
-        pkt.content || '', new Date(),
-        { thinking: pkt.thinking, thinkingSec: pkt.thinkingSec,
-          code: pkt.code, codeFile: pkt.codeFile, badge: pkt.badge }
-      );
-      inject(wrap, html);
-      dbAddMsg({ convId: App.conv, type: 'html', html, ts: Date.now() }).catch(()=>{});
+    case 'session.created':
+    case 'session.resumed':
+      if (pkt.conversation) upsertConversation(pkt.conversation, true);
       break;
-    }
 
-    case 'approval_required': {
-      hideTyping();
-      inject(wrap, buildNotif({
-        icon: '●', title: 'Approval Required', time: new Date(),
-        message: pkt.message || 'Agent requires approval.',
-        sub: 'Agent: ' + (pkt.agentName || 'Unknown'),
-        actions: [
-          { label: 'Approve', filled: true,  action: \`sendApproval('\${pkt.approvalId}',true)\` },
-          { label: 'Reject',                 action: \`sendApproval('\${pkt.approvalId}',false)\` },
-        ],
-      }));
+    case 'message.started':
+      if (pkt.conversation) upsertConversation(pkt.conversation, true);
+      startAssistantMessage();
       break;
-    }
 
+    case 'message.delta':
+      appendAssistantDelta(pkt.delta || '');
+      break;
+
+    case 'message.completed':
+      finishAssistantMessage(pkt.content || '');
+      if (pkt.conversation) upsertConversation(pkt.conversation, true);
+      break;
+
+    case 'plan.update':
+      updatePlanPanelFromPlan(pkt.plan);
+      break;
+
+    case 'message.error':
     case 'turn_failed':
       hideTyping();
-      inject(wrap, buildSysMsg('Agent run failed', pkt.reason || 'An error occurred.', [], true));
+      App.pendingAssistant = null;
+      inject(wrap, buildSysMsg('Codex run failed', pkt.message || pkt.reason || 'An error occurred.', [], true));
+      scrollBottom(true);
       break;
 
-    case 'plan_update':
-      updateProgress(pkt.completed || 0, pkt.total || 1);
+    case 'approval_required':
+      hideTyping();
+      inject(wrap, buildSysMsg('Approval required', 'This direct webchat currently supports auto-approved runs only.', [], true));
+      scrollBottom(true);
       break;
 
     default:
       console.debug('[STARK WS]', pkt);
   }
-  scrollBottom();
-}
-
-function sendApproval(approvalId, approved) {
-  wsSend({ type: 'approval_response', approvalId, approved });
-  toast(approved ? '✓ Approved' : '✕ Rejected');
 }
 `;

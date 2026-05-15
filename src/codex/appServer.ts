@@ -7,10 +7,6 @@ import { hostShellCommand, shellEscape, sshShellCommand } from "../shell.js";
 import { runtimeTurnSandboxPolicy } from "../config/schema.js";
 import { linearGraphqlToolSpec, type DynamicToolExecutor } from "./dynamicTool.js";
 
-const initializeId = 1;
-const threadStartId = 2;
-const turnStartId = 3;
-
 export interface CodexSession {
   process: ChildProcessWithoutNullStreams;
   reader: ProcessLineReader;
@@ -23,6 +19,8 @@ export interface CodexSession {
 }
 
 export class CodexAppServer {
+  private requestId = 1;
+
   constructor(
     private settingsProvider: () => Settings,
     private readonly logger: Logger,
@@ -39,22 +37,10 @@ export class CodexAppServer {
     const threadSandbox = this.settingsProvider().codex.threadSandbox;
     const turnSandboxPolicy = runtimeTurnSandboxPolicy(this.settingsProvider(), safeWorkspace);
     try {
-      await this.sendRequest(process, reader, {
-        method: "initialize",
-        id: initializeId,
-        params: {
-          capabilities: { experimentalApi: true },
-          clientInfo: {
-            name: "stark-orchestrator",
-            title: "S.T.A.R.K Orchestrator",
-            version: "0.1.0",
-          },
-        },
-      });
-      this.send(process, { method: "initialized", params: {} });
+      await this.initializeProcess(process, reader);
       const thread = await this.sendRequest(process, reader, {
         method: "thread/start",
-        id: threadStartId,
+        id: this.nextRequestId(),
         params: {
           approvalPolicy,
           sandbox: threadSandbox,
@@ -87,14 +73,67 @@ export class CodexAppServer {
     issue: Issue,
     onMessage: (event: RuntimeEvent) => void,
   ): Promise<{ sessionId: string; threadId: string; turnId: string }> {
+    return this.runDirectTurn(session, prompt, `${issue.identifier}: ${issue.title}`, onMessage);
+  }
+
+  async resumeSession(
+    workspace: string,
+    threadId: string,
+    workerHost: WorkerHost = null,
+  ): Promise<CodexSession> {
+    const safeWorkspace = workerHost
+      ? workspace
+      : await ensureInsideRoot(workspace, this.settingsProvider().workspace.root);
+    const process = this.startProcess(safeWorkspace, workerHost);
+    const reader = new ProcessLineReader(process);
+    const approvalPolicy = this.settingsProvider().codex.approvalPolicy;
+    const threadSandbox = this.settingsProvider().codex.threadSandbox;
+    const turnSandboxPolicy = runtimeTurnSandboxPolicy(this.settingsProvider(), safeWorkspace);
+    try {
+      await this.initializeProcess(process, reader);
+      const thread = await this.sendRequest(process, reader, {
+        method: "thread/resume",
+        id: this.nextRequestId(),
+        params: {
+          threadId,
+          approvalPolicy,
+          sandbox: threadSandbox,
+          cwd: safeWorkspace,
+          dynamicTools: [linearGraphqlToolSpec],
+        },
+      });
+      const resumedThreadId = getPath<string>(thread, ["thread", "id"]) ?? threadId;
+      return {
+        process,
+        reader,
+        threadId: resumedThreadId,
+        workspace: safeWorkspace,
+        workerHost,
+        approvalPolicy,
+        threadSandbox,
+        turnSandboxPolicy,
+      };
+    } catch (reason) {
+      reader.close();
+      process.kill();
+      throw reason;
+    }
+  }
+
+  async runDirectTurn(
+    session: CodexSession,
+    prompt: string,
+    title: string,
+    onMessage: (event: RuntimeEvent) => void,
+  ): Promise<{ sessionId: string; threadId: string; turnId: string }> {
     const response = await this.sendRequest(session.process, session.reader, {
       method: "turn/start",
-      id: turnStartId,
+      id: this.nextRequestId(),
       params: {
         threadId: session.threadId,
         input: [{ type: "text", text: prompt }],
         cwd: session.workspace,
-        title: `${issue.identifier}: ${issue.title}`,
+        title,
         approvalPolicy: session.approvalPolicy,
         sandboxPolicy: session.turnSandboxPolicy,
       },
@@ -118,6 +157,25 @@ export class CodexAppServer {
   stopSession(session: CodexSession): void {
     session.reader.close();
     session.process.kill();
+  }
+
+  private async initializeProcess(
+    process: ChildProcessWithoutNullStreams,
+    reader: ProcessLineReader,
+  ): Promise<void> {
+    await this.sendRequest(process, reader, {
+      method: "initialize",
+      id: this.nextRequestId(),
+      params: {
+        capabilities: { experimentalApi: true },
+        clientInfo: {
+          name: "stark-webchat",
+          title: "S.T.A.R.K Web Chat",
+          version: "0.1.0",
+        },
+      },
+    });
+    this.send(process, { method: "initialized", params: {} });
   }
 
   private startProcess(workspace: string, workerHost: WorkerHost): ChildProcessWithoutNullStreams {
@@ -224,6 +282,10 @@ export class CodexAppServer {
 
   private send(process: ChildProcessWithoutNullStreams, payload: Record<string, unknown>): void {
     process.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  private nextRequestId(): number {
+    return this.requestId++;
   }
 }
 

@@ -1,22 +1,28 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
 import type { Orchestrator } from "../orchestrator.js";
+import type { CodexAppServer } from "../codex/appServer.js";
 import type { Logger } from "../logging/logger.js";
 import type { Settings } from "../types.js";
 import { createSlackIntegration, type SlackIntegration } from "../slack/routes.js";
 import { renderWebchat } from "./webchat.js";
+import { WebchatBackend } from "./webchatBackend.js";
 
 export class HttpServer {
   private server: Server | null = null;
   private slackIntegration: SlackIntegration | null = null;
+  private readonly webchatBackend: WebchatBackend;
 
   constructor(
     private readonly orchestrator: Orchestrator,
+    private readonly codex: CodexAppServer,
     private readonly settingsProvider: () => Settings,
     private readonly logger: Logger,
     private readonly port: number,
     private readonly host = "127.0.0.1",
-  ) {}
+  ) {
+    this.webchatBackend = new WebchatBackend(codex, settingsProvider, logger);
+  }
 
   async start(): Promise<number> {
     const app = this.createApp();
@@ -29,6 +35,9 @@ export class HttpServer {
         this.server?.off("error", onError);
         resolve();
       });
+      this.server.on("upgrade", (request, socket, head) => {
+        if (!this.webchatBackend.handleUpgrade(request, socket, head)) socket.destroy();
+      });
       this.server.once("error", onError);
     });
     const address = this.server!.address();
@@ -37,6 +46,7 @@ export class HttpServer {
 
   async stop(): Promise<void> {
     if (!this.server) return;
+    this.webchatBackend.stop();
     await new Promise<void>((resolve, reject) =>
       this.server!.close((error) => (error ? reject(error) : resolve())),
     );
@@ -55,6 +65,7 @@ export class HttpServer {
       this.slackIntegration.start();
     }
     app.use(express.json());
+    this.webchatBackend.registerRoutes(app);
     app.get("/chat", (_request, response) => {
       const snapshot = this.orchestrator.snapshot();
       response.type("html").send(renderWebchat(snapshot));

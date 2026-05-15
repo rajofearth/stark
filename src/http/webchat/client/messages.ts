@@ -9,7 +9,7 @@ function hlCode(raw) {
   if (!raw) return '';
   let s = esc(raw);
   // comments
-  s = s.replace(/(\/\/[^\\n]*)/g, '<span class="hl-cmt">$1</span>');
+  s = s.replace(new RegExp('(//[^\\\\n]*)', 'g'), '<span class="hl-cmt">$1</span>');
   // single-quoted strings
   s = s.replace(/'[^'\\n]*'/g, '<span class="hl-str">$&</span>');
   // double-quoted strings

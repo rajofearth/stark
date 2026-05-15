@@ -6,14 +6,17 @@ let _db = null;
 async function openDB() {
   if (_db) return _db;
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('stark-webchat', 1);
+    const req = indexedDB.open('stark-webchat', 2);
     req.onupgradeneeded = e => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains('conversations'))
         db.createObjectStore('conversations', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('messages')) {
-        const ms = db.createObjectStore('messages', { keyPath: 'id', autoIncrement: true });
+        const ms = db.createObjectStore('messages', { keyPath: 'id' });
         ms.createIndex('convId', 'convId', { unique: false });
+      } else {
+        const ms = e.target.transaction.objectStore('messages');
+        if (!ms.indexNames.contains('convId')) ms.createIndex('convId', 'convId', { unique: false });
       }
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
@@ -31,12 +34,59 @@ async function dbPutConv(conv) {
   });
 }
 
+async function dbGetConvs() {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('conversations', 'readonly');
+    const req = tx.objectStore('conversations').getAll();
+    req.onsuccess = () => res((req.result || []).sort((a,b) => convTs(b) - convTs(a)));
+    req.onerror = e => rej(e.target.error);
+  });
+}
+
+function convTs(conv) {
+  const value = conv && conv.updatedAt;
+  if (typeof value === 'number') return value;
+  return Date.parse(value || '') || 0;
+}
+
+async function dbDeleteConv(id) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('conversations', 'readwrite');
+    const req = tx.objectStore('conversations').delete(id);
+    req.onsuccess = () => res();
+    req.onerror = e => rej(e.target.error);
+  });
+}
+
+async function dbGetConv(id) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('conversations', 'readonly');
+    const req = tx.objectStore('conversations').get(id);
+    req.onsuccess = () => res(req.result || null);
+    req.onerror = e => rej(e.target.error);
+  });
+}
+
 async function dbAddMsg(msg) {
   const db = await openDB();
   return new Promise((res, rej) => {
     const tx = db.transaction('messages', 'readwrite');
-    const req = tx.objectStore('messages').add(msg);
-    req.onsuccess = () => res(req.result);
+    const payload = Object.assign({ id: 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2) }, msg);
+    const req = tx.objectStore('messages').put(payload);
+    req.onsuccess = () => res(payload.id);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+
+async function dbPutMsg(msg) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const req = tx.objectStore('messages').put(msg);
+    req.onsuccess = () => res(msg.id);
     req.onerror   = e => rej(e.target.error);
   });
 }
@@ -46,7 +96,7 @@ async function dbGetMsgs(convId) {
   return new Promise((res, rej) => {
     const tx  = db.transaction('messages', 'readonly');
     const req = tx.objectStore('messages').index('convId').getAll(convId);
-    req.onsuccess = () => res(req.result || []);
+    req.onsuccess = () => res((req.result || []).sort((a,b) => (a.ts||0) - (b.ts||0)));
     req.onerror   = e => rej(e.target.error);
   });
 }

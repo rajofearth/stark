@@ -1,0 +1,510 @@
+import type { Express, Response } from "express";
+import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import { join } from "node:path";
+import type { Duplex } from "node:stream";
+import { URL } from "node:url";
+import type { CodexAppServer, CodexSession } from "../codex/appServer.js";
+import type { Logger } from "../logging/logger.js";
+import type { RuntimeEvent, Settings } from "../types.js";
+
+interface WebchatConversation {
+  id: string;
+  threadId: string;
+  title: string;
+  workspace: string;
+  createdAt: string;
+  updatedAt: string;
+  active: boolean;
+}
+
+interface ActiveConversation extends WebchatConversation {
+  session: CodexSession;
+  running: boolean;
+}
+
+export class WebchatBackend {
+  private readonly conversations = new Map<string, ActiveConversation>();
+
+  constructor(
+    private readonly codex: CodexAppServer,
+    private readonly settingsProvider: () => Settings,
+    private readonly logger: Logger,
+  ) {}
+
+  registerRoutes(app: Express): void {
+    app.get("/api/webchat/conversations", (_request, response) => {
+      response.json({ conversations: this.listConversations() });
+    });
+
+    app.post("/api/webchat/conversations", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const title = stringOrDefault(request.body?.title, "New Conversation");
+        const conv = await this.startConversation(title);
+        response.status(201).json({ conversation: publicConversation(conv) });
+      });
+    });
+
+    app.post("/api/webchat/conversations/:threadId/resume", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const threadId = request.params.threadId;
+        const title = stringOrDefault(request.body?.title, "Resumed Conversation");
+        const conv = await this.ensureConversation(threadId, title);
+        response.json({ conversation: publicConversation(conv) });
+      });
+    });
+
+    app.post("/api/webchat/send", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const threadId = typeof request.body?.threadId === "string" ? request.body.threadId : null;
+        const text = stringOrDefault(request.body?.text, "").trim();
+        const title = stringOrDefault(request.body?.title, text.slice(0, 80) || "Web Chat");
+        if (!text) {
+          response
+            .status(400)
+            .json({ error: { code: "empty_message", message: "Message is required" } });
+          return;
+        }
+        const conv = threadId
+          ? await this.ensureConversation(threadId, title)
+          : await this.startConversation(title);
+        const assistantText = await this.runTurn(conv, text, (event) => {
+          this.logger.debug("webchat_http_event", { event: event.event, threadId: conv.threadId });
+        });
+        response.json({ conversation: publicConversation(conv), content: assistantText });
+      });
+    });
+  }
+
+  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.pathname !== "/api/webchat/stream") return false;
+    if (head.length > 0) {
+      socket.destroy();
+      return true;
+    }
+    const key = request.headers["sec-websocket-key"];
+    if (typeof key !== "string") {
+      socket.destroy();
+      return true;
+    }
+    const accept = createHash("sha1")
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${accept}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    const ws = new SimpleWebSocket(socket);
+    ws.onMessage((message) => void this.handleWsMessage(ws, message));
+    ws.send({ event: "connected", conversations: this.listConversations() });
+    return true;
+  }
+
+  stop(): void {
+    for (const conv of this.conversations.values()) {
+      this.codex.stopSession(conv.session);
+    }
+    this.conversations.clear();
+  }
+
+  private async handleWsMessage(ws: SimpleWebSocket, raw: string): Promise<void> {
+    let packet: Record<string, unknown>;
+    try {
+      packet = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      ws.send({ event: "error", code: "invalid_json", message: "Invalid JSON" });
+      return;
+    }
+
+    const type = typeof packet.type === "string" ? packet.type : "";
+    try {
+      if (type === "conversation.create" || type === "session.create") {
+        const title = stringOrDefault(packet.title, "New Conversation");
+        const conv = await this.startConversation(title);
+        ws.send({ event: "session.created", conversation: publicConversation(conv) });
+        return;
+      }
+
+      if (type === "conversation.resume" || type === "session.resume") {
+        const threadId = stringOrDefault(packet.threadId, "");
+        if (!threadId) throw new Error("missing_thread_id");
+        const title = stringOrDefault(packet.title, "Resumed Conversation");
+        const conv = await this.ensureConversation(threadId, title);
+        ws.send({ event: "session.resumed", conversation: publicConversation(conv) });
+        return;
+      }
+
+      if (type === "user_message" || type === "message.send") {
+        const text = stringOrDefault(packet.text, "").trim();
+        if (!text) throw new Error("empty_message");
+        const threadId = stringOrDefault(packet.threadId, "");
+        const title = stringOrDefault(packet.title, text.slice(0, 80) || "Web Chat");
+        const conv = threadId
+          ? await this.ensureConversation(threadId, title)
+          : await this.startConversation(title);
+        ws.send({ event: "message.started", conversation: publicConversation(conv) });
+        let streamedText = "";
+        const fullText = await this.runTurn(conv, text, (event) => {
+          const extracted = extractAssistantText(event.payload, text);
+          if (!extracted) {
+            const plan = extractPlan(event.payload);
+            if (plan) ws.send({ event: "plan.update", plan });
+            return;
+          }
+          const delta = nextAssistantDelta(streamedText, extracted);
+          if (!delta) return;
+          streamedText += delta;
+          ws.send({ event: "message.delta", delta, content: streamedText });
+        });
+        ws.send({
+          event: "message.completed",
+          content: fullText,
+          conversation: publicConversation(conv),
+        });
+        return;
+      }
+
+      ws.send({ event: "error", code: "unknown_type", message: `Unknown message type: ${type}` });
+    } catch (reason) {
+      ws.send({
+        event: "message.error",
+        code: reason instanceof Error ? reason.message : "webchat_error",
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+
+  private async startConversation(title: string): Promise<ActiveConversation> {
+    const workspace = await this.webchatWorkspace();
+    const session = await this.codex.startSession(workspace);
+    const now = new Date().toISOString();
+    const conv: ActiveConversation = {
+      id: session.threadId,
+      threadId: session.threadId,
+      title,
+      workspace,
+      createdAt: now,
+      updatedAt: now,
+      active: true,
+      session,
+      running: false,
+    };
+    this.conversations.set(session.threadId, conv);
+    return conv;
+  }
+
+  private async ensureConversation(threadId: string, title: string): Promise<ActiveConversation> {
+    const active = this.conversations.get(threadId);
+    if (active) return active;
+    const workspace = await this.webchatWorkspace();
+    const session = await this.codex.resumeSession(workspace, threadId);
+    const now = new Date().toISOString();
+    const conv: ActiveConversation = {
+      id: session.threadId,
+      threadId: session.threadId,
+      title,
+      workspace,
+      createdAt: now,
+      updatedAt: now,
+      active: true,
+      session,
+      running: false,
+    };
+    this.conversations.set(session.threadId, conv);
+    return conv;
+  }
+
+  private async runTurn(
+    conv: ActiveConversation,
+    text: string,
+    onEvent: (event: RuntimeEvent) => void,
+  ): Promise<string> {
+    if (conv.running) throw new Error("conversation_busy");
+    conv.running = true;
+    conv.updatedAt = new Date().toISOString();
+    let assistantText = "";
+    try {
+      await this.codex.runDirectTurn(conv.session, text, conv.title, (event) => {
+        const extracted = extractAssistantText(event.payload, text);
+        const delta = nextAssistantDelta(assistantText, extracted);
+        if (delta) assistantText += delta;
+        onEvent(event);
+      });
+      return assistantText;
+    } finally {
+      conv.running = false;
+      conv.updatedAt = new Date().toISOString();
+    }
+  }
+
+  private async webchatWorkspace(): Promise<string> {
+    const workspace = join(this.settingsProvider().workspace.root, "webchat");
+    await mkdir(workspace, { recursive: true });
+    return workspace;
+  }
+
+  private listConversations(): WebchatConversation[] {
+    return Array.from(this.conversations.values())
+      .map(publicConversation)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private async handleHttp(response: Response, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      response.status(message === "missing_thread_id" ? 400 : 500).json({
+        error: { code: message || "webchat_error", message },
+      });
+    }
+  }
+}
+
+class SimpleWebSocket {
+  private readonly messageHandlers: Array<(message: string) => void> = [];
+  private buffer = Buffer.alloc(0);
+
+  constructor(private readonly socket: Duplex) {
+    socket.on("data", (chunk) => this.read(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    socket.on("error", () => undefined);
+  }
+
+  onMessage(handler: (message: string) => void): void {
+    this.messageHandlers.push(handler);
+  }
+
+  send(payload: unknown): void {
+    if (this.socket.destroyed) return;
+    const data = Buffer.from(JSON.stringify(payload));
+    let header: Buffer;
+    if (data.length < 126) {
+      header = Buffer.from([0x81, data.length]);
+    } else if (data.length <= 0xffff) {
+      header = Buffer.alloc(4);
+      header[0] = 0x81;
+      header[1] = 126;
+      header.writeUInt16BE(data.length, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[0] = 0x81;
+      header[1] = 127;
+      header.writeBigUInt64BE(BigInt(data.length), 2);
+    }
+    this.socket.write(Buffer.concat([header, data]));
+  }
+
+  private read(chunk: Buffer): void {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      const opcode = first & 0x0f;
+      const masked = (second & 0x80) !== 0;
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.buffer.length < offset + 2) return;
+        length = this.buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (this.buffer.length < offset + 8) return;
+        const bigLength = this.buffer.readBigUInt64BE(offset);
+        if (bigLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+          this.socket.destroy();
+          return;
+        }
+        length = Number(bigLength);
+        offset += 8;
+      }
+      const maskOffset = offset;
+      if (masked) offset += 4;
+      if (this.buffer.length < offset + length) return;
+      const frame = this.buffer;
+      const payload = frame.subarray(offset, offset + length);
+      const mask = frame.subarray(maskOffset, maskOffset + 4);
+      this.buffer = this.buffer.subarray(offset + length);
+      if (opcode === 0x8) {
+        this.socket.end();
+        return;
+      }
+      if (opcode !== 0x1) continue;
+      if (!masked) {
+        this.socket.destroy();
+        return;
+      }
+      const unmasked = Buffer.alloc(payload.length);
+      for (let index = 0; index < payload.length; index++) {
+        unmasked[index] = payload[index] ^ mask[index % 4];
+      }
+      const message = unmasked.toString("utf8");
+      for (const handler of this.messageHandlers) handler(message);
+    }
+  }
+}
+
+function publicConversation(conv: ActiveConversation): WebchatConversation {
+  return {
+    id: conv.id,
+    threadId: conv.threadId,
+    title: conv.title,
+    workspace: conv.workspace,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    active: conv.active,
+  };
+}
+
+function compactRuntimeEvent(event: RuntimeEvent): Record<string, unknown> {
+  return {
+    event: event.event,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    threadId: event.threadId,
+    turnId: event.turnId,
+    payload: event.payload,
+  };
+}
+
+function extractAssistantText(value: unknown, userText = ""): string {
+  if (isUserAuthoredEvent(value) || isUserInputEvent(value)) return "";
+  const text = extractText(value);
+  if (isEchoOfUserInput(text, userText)) return "";
+  return text;
+}
+
+function isUserAuthoredEvent(value: unknown): boolean {
+  const role = firstString(
+    path(value, ["role"]),
+    path(value, ["params", "role"]),
+    path(value, ["message", "role"]),
+    path(value, ["params", "message", "role"]),
+    path(value, ["params", "item", "role"]),
+    path(value, ["params", "item", "author", "role"]),
+    path(value, ["params", "item", "message", "role"]),
+    path(value, ["item", "role"]),
+    path(value, ["item", "author", "role"]),
+    path(value, ["author", "role"]),
+  ).toLowerCase();
+  return role === "user" || role === "human";
+}
+
+function isUserInputEvent(value: unknown): boolean {
+  const type = firstString(
+    path(value, ["type"]),
+    path(value, ["params", "type"]),
+    path(value, ["params", "item", "type"]),
+    path(value, ["item", "type"]),
+  ).toLowerCase();
+  if (type === "user" || type === "user_message" || type === "input_text") return true;
+  const content =
+    path(value, ["params", "item", "content"]) ??
+    path(value, ["params", "content"]) ??
+    path(value, ["item", "content"]) ??
+    path(value, ["content"]);
+  return contentContainsUserInput(content);
+}
+
+function contentContainsUserInput(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const record = entry as Record<string, unknown>;
+    const type = firstString(record.type, record.kind).toLowerCase();
+    const role = firstString(record.role, path(record, ["author", "role"])).toLowerCase();
+    return role === "user" || role === "human" || type === "input_text" || type === "user_text";
+  });
+}
+
+function isEchoOfUserInput(text: string, userText: string): boolean {
+  const normalizedText = normalizeMessageText(text);
+  const normalizedUserText = normalizeMessageText(userText);
+  return !!normalizedText && !!normalizedUserText && normalizedText === normalizedUserText;
+}
+
+function normalizeMessageText(text: string): string {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function nextAssistantDelta(current: string, extracted: string): string {
+  if (!extracted) return "";
+  if (extracted === current) return "";
+  if (extracted.startsWith(current)) return extracted.slice(current.length);
+  if (current.endsWith(extracted)) return "";
+  return extracted;
+}
+
+function extractPlan(value: unknown): unknown {
+  return (
+    path(value, ["plan"]) ??
+    path(value, ["params", "plan"]) ??
+    path(value, ["params", "item", "plan"]) ??
+    path(value, ["item", "plan"])
+  );
+}
+
+function extractText(value: unknown): string {
+  const direct = firstString(
+    path(value, ["delta"]),
+    path(value, ["text"]),
+    path(value, ["content"]),
+    path(value, ["message", "content"]),
+    path(value, ["params", "delta"]),
+    path(value, ["params", "text"]),
+    path(value, ["params", "content"]),
+    path(value, ["params", "message", "content"]),
+    path(value, ["params", "item", "text"]),
+  );
+  if (direct) return direct;
+  const itemContent = path(value, ["params", "item", "content"]);
+  const text = contentToText(itemContent);
+  if (text) return text;
+  return contentToText(path(value, ["content"]));
+}
+
+function contentToText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (!entry || typeof entry !== "object") return "";
+      return firstString(
+        (entry as Record<string, unknown>).text,
+        (entry as Record<string, unknown>).content,
+        (entry as Record<string, unknown>).delta,
+      );
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function path(value: unknown, segments: string[]): unknown {
+  let current = value;
+  for (const segment of segments) {
+    if (!current || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
