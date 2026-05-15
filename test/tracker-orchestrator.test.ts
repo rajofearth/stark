@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { normalizeToolCall } from "../src/codex/appServer.js";
 import { DynamicToolExecutor } from "../src/codex/dynamicTool.js";
-import { sortIssuesForDispatch } from "../src/orchestrator.js";
+import { isHumanReviewState, sortIssuesForDispatch } from "../src/orchestrator.js";
 import { MemoryTracker } from "../src/tracker/index.js";
 import type { Issue } from "../src/types.js";
 
@@ -33,6 +33,12 @@ describe("tracker and orchestration helpers", () => {
       toolName: "linear_graphql",
       args: { query: "query Viewer { viewer { id } }" },
     });
+  });
+
+  test("recognizes Human Review as a parked state", () => {
+    expect(isHumanReviewState("Human Review")).toBe(true);
+    expect(isHumanReviewState(" human review ")).toBe(true);
+    expect(isHumanReviewState("Merging")).toBe(false);
   });
 });
 

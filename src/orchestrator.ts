@@ -250,7 +250,7 @@ export class Orchestrator extends EventEmitter {
         },
         onEvent: (event) => this.integrateCodexUpdate(issue.id, event),
       })
-      .then(() => this.handleWorkerExit(issue.id, "normal"))
+      .then((finalIssue) => this.handleWorkerExit(issue.id, "normal", finalIssue))
       .catch((reason) =>
         this.handleWorkerExit(issue.id, reason instanceof Error ? reason.message : String(reason)),
       );
@@ -270,19 +270,24 @@ export class Orchestrator extends EventEmitter {
     );
   }
 
-  private handleWorkerExit(issueId: string, reason: "normal" | string): void {
+  private handleWorkerExit(issueId: string, reason: "normal" | string, finalIssue?: Issue): void {
     const entry = this.running.get(issueId);
     if (!entry) return;
+    if (finalIssue) entry.issue = finalIssue;
     this.recordSessionCompletionTotals(entry);
     this.running.delete(issueId);
     if (reason === "normal") {
       this.completed.add(issueId);
-      this.scheduleIssueRetry(issueId, 1, {
-        identifier: entry.identifier,
-        delayType: "continuation",
-        workerHost: entry.workerHost,
-        workspacePath: entry.workspacePath,
-      });
+      if (this.shouldContinueAfterWorkerExit(entry.issue)) {
+        this.scheduleIssueRetry(issueId, 1, {
+          identifier: entry.identifier,
+          delayType: "continuation",
+          workerHost: entry.workerHost,
+          workspacePath: entry.workspacePath,
+        });
+      } else {
+        this.claimed.delete(issueId);
+      }
     } else {
       this.scheduleIssueRetry(issueId, nextRetryAttempt(entry), {
         identifier: entry.identifier,
@@ -295,7 +300,9 @@ export class Orchestrator extends EventEmitter {
       reason === "normal" ? "worker_completed" : "worker_failed",
       entry.issue,
       reason === "normal"
-        ? "Worker completed; scheduling continuation check"
+        ? this.shouldContinueAfterWorkerExit(entry.issue)
+          ? "Worker completed; scheduling continuation check"
+          : `Worker completed; parked in ${entry.issue.state}`
         : `Worker failed: ${reason}`,
       { sessionId: entry.sessionId, workerHost: entry.workerHost },
     );
@@ -318,6 +325,7 @@ export class Orchestrator extends EventEmitter {
     const visible = new Set(issues.map((issue) => issue.id));
     for (const issue of issues) {
       if (this.isTerminal(issue.state)) await this.terminateRunningIssue(issue.id, true);
+      else if (this.isHumanReview(issue.state)) await this.terminateRunningIssue(issue.id, false);
       else if (!issue.assignedToWorker) await this.terminateRunningIssue(issue.id, false);
       else if (this.isActive(issue.state)) {
         const entry = this.running.get(issue.id);
@@ -487,6 +495,7 @@ export class Orchestrator extends EventEmitter {
       !!issue.title &&
       this.isActive(issue.state) &&
       !this.isTerminal(issue.state) &&
+      !this.isHumanReview(issue.state) &&
       !this.claimed.has(issue.id) &&
       !this.running.has(issue.id) &&
       issue.assignedToWorker !== false &&
@@ -622,9 +631,25 @@ export class Orchestrator extends EventEmitter {
     return this.terminalStates().has(normalizeIssueState(state));
   }
 
+  private isHumanReview(state: string): boolean {
+    return isHumanReviewState(state);
+  }
+
+  private shouldContinueAfterWorkerExit(issue: Issue): boolean {
+    return (
+      this.isActive(issue.state) &&
+      !this.isTerminal(issue.state) &&
+      !this.isHumanReview(issue.state)
+    );
+  }
+
   private terminalStates(): Set<string> {
     return new Set(this.settingsProvider().tracker.terminalStates.map(normalizeIssueState));
   }
+}
+
+export function isHumanReviewState(state: string): boolean {
+  return normalizeIssueState(state) === "human review";
 }
 
 export function sortIssuesForDispatch(issues: Issue[]): Issue[] {

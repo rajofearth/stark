@@ -26,7 +26,7 @@ export class AgentRunner {
       onEvent: (event: RuntimeEvent) => void;
       onRuntimeInfo: (info: { workerHost: WorkerHost; workspacePath: string }) => void;
     },
-  ): Promise<void> {
+  ): Promise<Issue> {
     const workerHost = options.workerHost ?? this.selectedWorkerHost();
     this.logger.info("Starting worker attempt", {
       issue_id: issue.id,
@@ -37,7 +37,7 @@ export class AgentRunner {
     options.onRuntimeInfo({ workerHost, workspacePath: workspace.path });
     try {
       await this.workspaceManager.runBeforeRun(workspace.path, issue, workerHost);
-      await this.runCodexTurns(
+      return await this.runCodexTurns(
         workspace.path,
         issue,
         options.attempt,
@@ -57,10 +57,11 @@ export class AgentRunner {
     workerHost: WorkerHost,
     signal: AbortSignal,
     onEvent: (event: RuntimeEvent) => void,
-  ): Promise<void> {
+  ): Promise<Issue> {
     const session = await this.codex.startSession(workspacePath, workerHost);
     try {
       let issue = initialIssue;
+      if (!this.isRunnable(issue.state)) return issue;
       const maxTurns = this.settingsProvider().agent.maxTurns;
       for (let turn = 1; turn <= maxTurns; turn += 1) {
         if (signal.aborted) throw new Error("worker_cancelled");
@@ -71,26 +72,32 @@ export class AgentRunner {
         await this.codex.runTurn(session, prompt, issue, onEvent);
         const refreshed = await this.tracker.fetchIssueStatesByIds([issue.id]);
         issue = refreshed[0] ?? issue;
-        if (!this.isActive(issue.state)) return;
+        if (!this.isRunnable(issue.state)) return issue;
       }
       this.logger.info("Reached agent.max_turns with issue still active", {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
         max_turns: maxTurns,
       });
+      return issue;
     } finally {
       this.codex.stopSession(session);
     }
   }
 
-  private isActive(state: string): boolean {
+  private isRunnable(state: string): boolean {
     const active = new Set(this.settingsProvider().tracker.activeStates.map(normalizeIssueState));
-    return active.has(normalizeIssueState(state));
+    const normalized = normalizeIssueState(state);
+    return active.has(normalized) && !isHumanReviewState(normalized);
   }
 
   private selectedWorkerHost(): WorkerHost {
     return this.settingsProvider().worker.sshHosts[0] ?? null;
   }
+}
+
+function isHumanReviewState(normalizedState: string): boolean {
+  return normalizedState === "human review";
 }
 
 function continuationPrompt(turn: number, maxTurns: number): string {
