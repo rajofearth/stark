@@ -60,7 +60,13 @@ export class StarkRuntime {
     const settings = this.getSettings();
     const port = settings.server.port;
     if (settings.observability.dashboardEnabled && typeof port === "number") {
-      this.httpServer = new HttpServer(this.orchestrator, port, settings.server.host);
+      this.httpServer = new HttpServer(
+        this.orchestrator,
+        () => this.getSettings(),
+        this.logger,
+        port,
+        settings.server.host,
+      );
       const boundPort = await this.httpServer.start();
       this.dashboardUrlValue = `http://${settings.server.host}:${boundPort}/`;
       this.logger.info("HTTP observability server started", {

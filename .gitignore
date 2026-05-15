@@ -3,4 +3,5 @@ dist/
 coverage/
 log/
 *.log
+.STARK-workspaces/
 .DS_Store

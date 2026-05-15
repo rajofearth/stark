@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { normalizeToolCall } from "../src/codex/appServer.js";
 import { DynamicToolExecutor } from "../src/codex/dynamicTool.js";
-import { isHumanReviewState, sortIssuesForDispatch } from "../src/orchestrator.js";
+import {
+  isHumanReviewState,
+  sortIssuesForDispatch,
+  summarizeRuntimePayload,
+} from "../src/orchestrator.js";
 import { MemoryTracker } from "../src/tracker/index.js";
 import type { Issue } from "../src/types.js";
 
@@ -39,6 +43,35 @@ describe("tracker and orchestration helpers", () => {
     expect(isHumanReviewState("Human Review")).toBe(true);
     expect(isHumanReviewState(" human review ")).toBe(true);
     expect(isHumanReviewState("Merging")).toBe(false);
+  });
+
+  test("summarizes readable Codex notification text", () => {
+    expect(
+      summarizeRuntimePayload({
+        method: "item/updated",
+        params: {
+          item: {
+            type: "assistant_message",
+            content: [{ type: "text", text: "Created the project and started the dev server." }],
+          },
+        },
+      }),
+    ).toBe("Created the project and started the dev server.");
+  });
+
+  test("summarizes Codex agentMessage final answers", () => {
+    expect(
+      summarizeRuntimePayload({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "agentMessage",
+            text: "Built the app and validated it.",
+            phase: "final_answer",
+          },
+        },
+      }),
+    ).toBe("Built the app and validated it.");
   });
 });
 

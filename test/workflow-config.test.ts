@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { parseSettings } from "../src/config/schema.js";
-import { loadWorkflow, parseWorkflow } from "../src/workflow/workflow.js";
+import {
+  defaultWorkflow,
+  loadWorkflow,
+  parseWorkflow,
+  WorkflowStore,
+} from "../src/workflow/workflow.js";
+import { Logger } from "../src/logging/logger.js";
 
 describe("workflow and config", () => {
   test("parses YAML front matter and prompt body", () => {
@@ -46,5 +52,24 @@ describe("workflow and config", () => {
     const workflow = await loadWorkflow(workflowPath);
     const settings = parseSettings(workflow.config, workflowPath);
     expect(settings.server.port).toBeNull();
+  });
+
+  test("provides a default parent workflow when no workflow file exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stark-config-"));
+    const workflowPath = join(dir, "missing-WORKFLOW.md");
+    const store = new WorkflowStore(workflowPath, new Logger({ stderr: false }));
+    await store.start();
+    const workflow = await store.current();
+    await store.stop();
+    expect(workflow.config).toMatchObject({ tracker: { kind: "memory" } });
+    expect(workflow.promptTemplate).toContain("Slack-controlled autonomous coding agent");
+  });
+
+  test("auto-enables Slack when secrets are present without workflow config", () => {
+    const settings = parseSettings(defaultWorkflow().config, "/tmp/stark/WORKFLOW.md", {
+      SLACK_BOT_TOKEN: "xoxb-token",
+      SLACK_SIGNING_SECRET: "secret",
+    });
+    expect(settings.slack.enabled).toBe(true);
   });
 });

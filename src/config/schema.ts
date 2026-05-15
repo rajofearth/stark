@@ -85,6 +85,28 @@ const rawConfigSchema = z
       })
       .passthrough()
       .optional(),
+    slack: z
+      .object({
+        enabled: z.boolean().optional(),
+        bot_token: z.string().nullable().optional(),
+        signing_secret: z.string().nullable().optional(),
+        allowed_channel_ids: stringArray.optional(),
+        allowed_user_ids: stringArray.optional(),
+        public_base_url: z.string().nullable().optional(),
+        command_name: z.string().min(1).optional(),
+        artifact_roots: stringArray.optional(),
+        require_approval_for: stringArray.optional(),
+      })
+      .passthrough()
+      .optional(),
+    github: z
+      .object({
+        enabled: z.boolean().optional(),
+        allowed_repo_roots: stringArray.optional(),
+        pr_timeout_ms: z.number().int().positive().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -119,6 +141,8 @@ export function parseSettings(
   const hooks = config.hooks ?? {};
   const observability = config.observability ?? {};
   const server = config.server ?? {};
+  const slack = config.slack ?? {};
+  const github = config.github ?? {};
 
   const settings: Settings = {
     tracker: {
@@ -181,6 +205,38 @@ export function parseSettings(
       port: server.port === undefined ? 4000 : server.port,
       host: server.host ?? "127.0.0.1",
     },
+    slack: {
+      enabled:
+        slack.enabled ??
+        booleanFromEnv(env.STARK_SLACK_ENABLED) ??
+        Boolean(env.SLACK_BOT_TOKEN && env.SLACK_SIGNING_SECRET),
+      botToken: resolveSecretSetting(slack.bot_token, env.SLACK_BOT_TOKEN, env),
+      signingSecret: resolveSecretSetting(slack.signing_secret, env.SLACK_SIGNING_SECRET, env),
+      allowedChannelIds: splitEnvList(slack.allowed_channel_ids, env.SLACK_ALLOWED_CHANNELS),
+      allowedUserIds: splitEnvList(slack.allowed_user_ids, env.SLACK_ALLOWED_USERS),
+      publicBaseUrl: resolveSecretSetting(slack.public_base_url, env.STARK_PUBLIC_BASE_URL, env),
+      commandName: slack.command_name ?? "/stark",
+      artifactRoots: resolvePathList(
+        splitEnvList(slack.artifact_roots, env.STARK_ARTIFACT_ROOTS),
+        workflowPath,
+        env,
+      ),
+      requireApprovalFor: slack.require_approval_for ?? [
+        "ask",
+        "artifact_upload",
+        "github_pr",
+        "new_project",
+      ],
+    },
+    github: {
+      enabled: github.enabled ?? false,
+      allowedRepoRoots: resolvePathList(
+        splitEnvList(github.allowed_repo_roots, env.STARK_GITHUB_REPO_ROOTS),
+        workflowPath,
+        env,
+      ),
+      prTimeoutMs: github.pr_timeout_ms ?? 120_000,
+    },
   };
 
   return settings;
@@ -207,6 +263,17 @@ export function validateDispatchSettings(settings: Settings): void {
   }
   if (!settings.codex.command) {
     throw new ConfigError("missing_codex_command", "Codex command missing in WORKFLOW.md");
+  }
+  if (settings.slack.enabled) {
+    if (!settings.slack.botToken) {
+      throw new ConfigError("missing_slack_bot_token", "Slack bot token missing in WORKFLOW.md");
+    }
+    if (!settings.slack.signingSecret) {
+      throw new ConfigError(
+        "missing_slack_signing_secret",
+        "Slack signing secret missing in WORKFLOW.md",
+      );
+    }
   }
 }
 
@@ -249,6 +316,20 @@ function resolveSecretSetting(
 
 function normalizeOptionalString(value: string | null | undefined): string | null {
   return value && value !== "" ? value : null;
+}
+
+function splitEnvList(configured: string[] | undefined, envValue: string | undefined): string[] {
+  const values = configured ?? envValue?.split(",") ?? [];
+  return values.map((value) => value.trim()).filter(Boolean);
+}
+
+function resolvePathList(values: string[], workflowPath: string, env: NodeJS.ProcessEnv): string[] {
+  return values.map((value) => resolveWorkspaceRoot(value, workflowPath, env));
+}
+
+function booleanFromEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 function resolveEnvReference(

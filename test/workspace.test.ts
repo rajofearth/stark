@@ -67,5 +67,17 @@ function baseSettings(root: string): Settings {
     },
     observability: { dashboardEnabled: true, refreshMs: 1000, renderIntervalMs: 16 },
     server: { port: null, host: "127.0.0.1" },
+    slack: {
+      enabled: false,
+      botToken: null,
+      signingSecret: null,
+      allowedChannelIds: [],
+      allowedUserIds: [],
+      publicBaseUrl: null,
+      commandName: "/stark",
+      artifactRoots: [],
+      requireApprovalFor: ["ask", "artifact_upload", "github_pr", "new_project"],
+    },
+    github: { enabled: false, allowedRepoRoots: [], prTimeoutMs: 120_000 },
   };
 }

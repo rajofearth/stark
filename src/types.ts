@@ -72,6 +72,22 @@ export interface Settings {
     renderIntervalMs: number;
   };
   server: { port: number | null; host: string };
+  slack: {
+    enabled: boolean;
+    botToken: string | null;
+    signingSecret: string | null;
+    allowedChannelIds: string[];
+    allowedUserIds: string[];
+    publicBaseUrl: string | null;
+    commandName: string;
+    artifactRoots: string[];
+    requireApprovalFor: string[];
+  };
+  github: {
+    enabled: boolean;
+    allowedRepoRoots: string[];
+    prTimeoutMs: number;
+  };
 }
 
 export interface RuntimeEvent {
@@ -125,6 +141,7 @@ export interface RunningEntry {
   lastReportedInputTokens: number;
   lastReportedOutputTokens: number;
   lastReportedTotalTokens: number;
+  lastAssistantMessage: string | null;
   turnCount: number;
   workerHost: WorkerHost;
   workspacePath: string | null;

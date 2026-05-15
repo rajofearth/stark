@@ -1,12 +1,18 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
 import type { Orchestrator } from "../orchestrator.js";
+import type { Logger } from "../logging/logger.js";
+import type { Settings } from "../types.js";
+import { createSlackIntegration, type SlackIntegration } from "../slack/routes.js";
 
 export class HttpServer {
   private server: Server | null = null;
+  private slackIntegration: SlackIntegration | null = null;
 
   constructor(
     private readonly orchestrator: Orchestrator,
+    private readonly settingsProvider: () => Settings,
+    private readonly logger: Logger,
     private readonly port: number,
     private readonly host = "127.0.0.1",
   ) {}
@@ -38,6 +44,15 @@ export class HttpServer {
 
   private createApp(): Express {
     const app = express();
+    this.slackIntegration = createSlackIntegration(
+      this.settingsProvider,
+      this.orchestrator,
+      this.logger,
+    );
+    if (this.slackIntegration) {
+      app.use("/slack", this.slackIntegration.router);
+      this.slackIntegration.start();
+    }
     app.use(express.json());
     app.get("/", (_request, response) => {
       const snapshot = this.orchestrator.snapshot();
@@ -291,12 +306,21 @@ function renderDashboard(snapshot: Record<string, any>): string {
           });
       }
 
+      function renderQueuedRows(queued) {
+        if (!queued.length) return ["│  " + gray("No queued Slack jobs")];
+        return [...queued].map((q) => {
+          const title = q.title ? " " + dim(String(q.title).replace(/\\s+/g, " ").slice(0, 96)) : "";
+          return \`│  \${yellow("•")} \${cyan(q.issue_identifier ?? "unknown")} \${green(q.source ?? "queued")}\${title}\`;
+        });
+      }
+
       function render(snapshot) {
         const counts = snapshot.counts ?? {};
         const health = snapshot.health ?? {};
         const totals = snapshot.codex_totals ?? {};
         const running = snapshot.running ?? [];
         const retrying = snapshot.retrying ?? [];
+        const queued = snapshot.queued ?? [];
         const maxAgents = (counts.running ?? 0) + (health.available_slots ?? 0);
         const polling = health.polling ?? "unknown";
         const time = snapshot.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "n/a";
@@ -314,6 +338,9 @@ function renderDashboard(snapshot: Record<string, any>): string {
         lines.push(bold("├─ Running"));
         lines.push("│");
         for (const row of renderRunningRows(running, EVENT_WIDTH)) lines.push(row);
+        lines.push(bold("├─ Slack queue"));
+        lines.push("│");
+        for (const row of renderQueuedRows(queued)) lines.push(row);
         lines.push(bold("├─ Backoff queue"));
         lines.push("│");
         for (const row of renderRetryRows(retrying)) lines.push(row);

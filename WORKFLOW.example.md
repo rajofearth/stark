@@ -31,6 +31,22 @@ codex:
     type: workspaceWrite
 server:
   port: 4000
+slack:
+  enabled: false
+  bot_token: $SLACK_BOT_TOKEN
+  signing_secret: $SLACK_SIGNING_SECRET
+  allowed_channel_ids:
+    - C0123456789
+  allowed_user_ids:
+    - U0123456789
+  public_base_url: $STARK_PUBLIC_BASE_URL
+  artifact_roots:
+    - ./assets
+    - ~/stark-workspaces
+github:
+  enabled: false
+  allowed_repo_roots:
+    - ~/stark-workspaces
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`.

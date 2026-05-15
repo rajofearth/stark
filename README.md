@@ -44,6 +44,41 @@ The dashboard is designed for operating active S.T.A.R.K runs. It shows:
 
 The page refreshes itself every two seconds and includes a manual refresh button that triggers an immediate poll/reconciliation cycle.
 
+## Slack Jarvis Mode
+
+S.T.A.R.K can expose Slack endpoints from the same HTTP server as the dashboard. For local development, run the server on port `4000`, expose it with ngrok, then configure Slack callbacks to the ngrok URL:
+
+```sh
+export SLACK_BOT_TOKEN=xoxb-...
+export SLACK_SIGNING_SECRET=...
+export STARK_PUBLIC_BASE_URL=https://example.ngrok-free.app
+ngrok http 4000
+npm start -- ./WORKFLOW.md --no-open
+```
+
+Slack endpoints:
+
+- Slash command: `POST /slack/commands`
+- Event subscriptions: `POST /slack/events`
+- Interactivity: `POST /slack/interactions`
+
+Enable the integration in `WORKFLOW.md`:
+
+```yaml
+slack:
+  enabled: true
+  bot_token: $SLACK_BOT_TOKEN
+  signing_secret: $SLACK_SIGNING_SECRET
+  allowed_channel_ids: ["C0123456789"]
+  allowed_user_ids: ["U0123456789"]
+  artifact_roots: ["./assets", "~/stark-workspaces"]
+github:
+  enabled: true
+  allowed_repo_roots: ["~/stark-workspaces"]
+```
+
+Supported commands include `status`, `refresh`, `issue <id>`, `ask <task>`, `artifact <keywords>`, `approvals`, `approve <id>`, `reject <id>`, `pr <repo-path> [title]`, and `new-project <instructions>`. Risky actions are approval-gated by default.
+
 ## Cross-Platform Notes
 
 On macOS and POSIX hosts, local hooks run through `sh -lc`. On Windows, local hooks run through PowerShell. Write `WORKFLOW.md` hooks for the target host shell, or use SSH workers for POSIX remote execution.

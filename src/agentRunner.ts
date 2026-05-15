@@ -22,6 +22,7 @@ export class AgentRunner {
     options: {
       attempt: number | null;
       workerHost: WorkerHost;
+      refreshIssueAfterTurn?: boolean;
       signal: AbortSignal;
       onEvent: (event: RuntimeEvent) => void;
       onRuntimeInfo: (info: { workerHost: WorkerHost; workspacePath: string }) => void;
@@ -44,6 +45,7 @@ export class AgentRunner {
         workerHost,
         options.signal,
         options.onEvent,
+        options.refreshIssueAfterTurn ?? true,
       );
     } finally {
       await this.workspaceManager.runAfterRun(workspace.path, issue, workerHost);
@@ -57,6 +59,7 @@ export class AgentRunner {
     workerHost: WorkerHost,
     signal: AbortSignal,
     onEvent: (event: RuntimeEvent) => void,
+    refreshIssueAfterTurn: boolean,
   ): Promise<Issue> {
     const session = await this.codex.startSession(workspacePath, workerHost);
     try {
@@ -70,6 +73,9 @@ export class AgentRunner {
             ? await buildPrompt(await this.workflowStore.current(), issue, attempt)
             : continuationPrompt(turn, maxTurns);
         await this.codex.runTurn(session, prompt, issue, onEvent);
+        if (!refreshIssueAfterTurn) {
+          return { ...issue, state: "Human Review", updatedAt: new Date() };
+        }
         const refreshed = await this.tracker.fetchIssueStatesByIds([issue.id]);
         issue = refreshed[0] ?? issue;
         if (!this.isRunnable(issue.state)) return issue;

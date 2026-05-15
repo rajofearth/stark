@@ -28,6 +28,13 @@ interface RecentEvent {
   worker_host?: string | null;
 }
 
+export interface AdHocIssueMetadata {
+  source: string;
+  channel?: string | null;
+  threadTs?: string | null;
+  user?: string | null;
+}
+
 export class Orchestrator extends EventEmitter {
   pollIntervalMs = 30_000;
   maxConcurrentAgents = 10;
@@ -42,6 +49,8 @@ export class Orchestrator extends EventEmitter {
   private tickTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private recentEvents: RecentEvent[] = [];
+  private adHocQueue: Array<{ issue: Issue; metadata: AdHocIssueMetadata }> = [];
+  private adHocIssues = new Map<string, { issue: Issue; metadata: AdHocIssueMetadata }>();
 
   constructor(
     private settingsProvider: () => Settings,
@@ -76,6 +85,34 @@ export class Orchestrator extends EventEmitter {
       requested_at: new Date().toISOString(),
       operations: ["poll", "reconcile"],
     };
+  }
+
+  enqueueAdHocIssue(issue: Issue, metadata: AdHocIssueMetadata): Record<string, unknown> {
+    if (
+      this.claimed.has(issue.id) ||
+      this.running.has(issue.id) ||
+      this.adHocIssues.has(issue.id)
+    ) {
+      return { queued: false, reason: "issue_already_known", issue_identifier: issue.identifier };
+    }
+    this.adHocIssues.set(issue.id, { issue, metadata });
+    this.adHocQueue.push({ issue, metadata });
+    this.claimed.add(issue.id);
+    this.recordEvent("adhoc_queued", issue, `Queued ${issue.identifier} from ${metadata.source}`, {
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+    });
+    this.scheduleTick(0);
+    return {
+      queued: true,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      requested_at: new Date().toISOString(),
+    };
+  }
+
+  adHocMetadata(issueId: string): AdHocIssueMetadata | null {
+    return this.adHocIssues.get(issueId)?.metadata ?? null;
   }
 
   snapshot(): Record<string, unknown> {
@@ -124,6 +161,14 @@ export class Orchestrator extends EventEmitter {
         error: entry.error,
         worker_host: entry.workerHost,
       })),
+      queued: this.adHocQueue.map(({ issue, metadata }) => ({
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        title: issue.title,
+        source: metadata.source,
+        channel: metadata.channel ?? null,
+        thread_ts: metadata.threadTs ?? null,
+      })),
       codex_totals: {
         input_tokens: this.codexTotals.inputTokens,
         output_tokens: this.codexTotals.outputTokens,
@@ -138,16 +183,25 @@ export class Orchestrator extends EventEmitter {
   issueSnapshot(identifier: string): Record<string, unknown> | null {
     const running = [...this.running.values()].find((entry) => entry.identifier === identifier);
     const retry = [...this.retryAttempts.values()].find((entry) => entry.identifier === identifier);
-    if (!running && !retry) return null;
+    const queued = this.adHocQueue.find((entry) => entry.issue.identifier === identifier);
+    if (!running && !retry && !queued) return null;
     return {
       issue_identifier: identifier,
-      issue_id: running?.issue.id ?? retry?.issueId ?? null,
-      status: running ? "running" : "retrying",
+      issue_id: running?.issue.id ?? retry?.issueId ?? queued?.issue.id ?? null,
+      status: running ? "running" : retry ? "retrying" : "queued",
       workspace: { path: running?.workspacePath ?? retry?.workspacePath ?? null },
       running: running
         ? (this.snapshot().running as Array<Record<string, unknown>>).find(
             (row) => row.issue_identifier === identifier,
           )
+        : null,
+      queued: queued
+        ? {
+            title: queued.issue.title,
+            source: queued.metadata.source,
+            channel: queued.metadata.channel ?? null,
+            thread_ts: queued.metadata.threadTs ?? null,
+          }
         : null,
       retry: retry
         ? {
@@ -179,6 +233,7 @@ export class Orchestrator extends EventEmitter {
     try {
       await this.reconcileRunningIssues();
       validateDispatchSettings(this.settingsProvider());
+      this.dispatchQueuedAdHocIssues();
       const issues = await this.tracker.fetchCandidateIssues();
       for (const issue of sortIssuesForDispatch(issues)) {
         if (this.availableSlots() <= 0) break;
@@ -192,6 +247,14 @@ export class Orchestrator extends EventEmitter {
       this.pollCheckInProgress = false;
       this.emit("updated");
       this.scheduleTick(this.pollIntervalMs);
+    }
+  }
+
+  private dispatchQueuedAdHocIssues(): void {
+    while (this.availableSlots() > 0 && this.adHocQueue.length > 0) {
+      const queued = this.adHocQueue.shift()!;
+      this.claimed.delete(queued.issue.id);
+      this.dispatchIssue(queued.issue, null, null);
     }
   }
 
@@ -223,6 +286,7 @@ export class Orchestrator extends EventEmitter {
       lastReportedInputTokens: 0,
       lastReportedOutputTokens: 0,
       lastReportedTotalTokens: 0,
+      lastAssistantMessage: null,
       turnCount: 0,
       workerHost: workerHost === null ? null : workerHost,
       workspacePath: null,
@@ -236,6 +300,7 @@ export class Orchestrator extends EventEmitter {
       .run(issue, {
         attempt,
         workerHost: workerHost === null ? null : workerHost,
+        refreshIssueAfterTurn: !this.adHocIssues.has(issue.id),
         signal: abortController.signal,
         onRuntimeInfo: (info) => {
           const current = this.running.get(issue.id);
@@ -300,9 +365,10 @@ export class Orchestrator extends EventEmitter {
       reason === "normal" ? "worker_completed" : "worker_failed",
       entry.issue,
       reason === "normal"
-        ? this.shouldContinueAfterWorkerExit(entry.issue)
-          ? "Worker completed; scheduling continuation check"
-          : `Worker completed; parked in ${entry.issue.state}`
+        ? (entry.lastAssistantMessage ??
+            (this.shouldContinueAfterWorkerExit(entry.issue)
+              ? "Worker completed; scheduling continuation check"
+              : "Worker completed without a final assistant response."))
         : `Worker failed: ${reason}`,
       { sessionId: entry.sessionId, workerHost: entry.workerHost },
     );
@@ -312,10 +378,11 @@ export class Orchestrator extends EventEmitter {
   private async reconcileRunningIssues(): Promise<void> {
     this.reconcileStalledRuns();
     const ids = [...this.running.keys()];
-    if (ids.length === 0) return;
+    const trackerIds = ids.filter((id) => !this.adHocIssues.has(id));
+    if (trackerIds.length === 0) return;
     let issues: Issue[];
     try {
-      issues = await this.tracker.fetchIssueStatesByIds(ids);
+      issues = await this.tracker.fetchIssueStatesByIds(trackerIds);
     } catch (reason) {
       this.logger.debug("Failed to refresh running issue states; keeping active workers", {
         reason: String(reason),
@@ -334,7 +401,7 @@ export class Orchestrator extends EventEmitter {
         await this.terminateRunningIssue(issue.id, false);
       }
     }
-    for (const id of ids) {
+    for (const id of trackerIds) {
       if (!visible.has(id)) await this.terminateRunningIssue(id, false);
     }
   }
@@ -442,6 +509,29 @@ export class Orchestrator extends EventEmitter {
     const retry = this.retryAttempts.get(issueId);
     if (!retry) return;
     this.retryAttempts.delete(issueId);
+    const adHoc = this.adHocIssues.get(issueId);
+    if (adHoc) {
+      if (this.availableSlots() === 0) {
+        this.scheduleIssueRetry(issueId, retry.attempt + 1, {
+          identifier: retry.identifier,
+          error: "no available orchestrator slots",
+          workerHost: retry.workerHost,
+          workspacePath: retry.workspacePath,
+        });
+        return;
+      }
+      this.claimed.delete(issueId);
+      this.recordEvent(
+        "retry_dispatch",
+        adHoc.issue,
+        `Retrying ${adHoc.issue.identifier} attempt ${retry.attempt}`,
+        {
+          workerHost: retry.workerHost,
+        },
+      );
+      this.dispatchIssue(adHoc.issue, retry.attempt, retry.workerHost);
+      return;
+    }
     try {
       const candidates = await this.tracker.fetchCandidateIssues();
       const issue = candidates.find((candidate) => candidate.id === issueId);
@@ -538,7 +628,10 @@ export class Orchestrator extends EventEmitter {
     if (!entry) return;
     entry.lastCodexEvent = update.event;
     entry.lastCodexTimestamp = new Date(update.timestamp);
-    entry.lastCodexMessage = summarize(update.payload);
+    const message = summarizeRuntimePayload(update.payload) ?? update.event;
+    entry.lastCodexMessage = message;
+    entry.lastAssistantMessage =
+      extractAssistantMessage(update.payload) ?? entry.lastAssistantMessage;
     entry.sessionId = update.sessionId ?? entry.sessionId;
     entry.threadId = update.threadId ?? entry.threadId;
     entry.turnId = update.turnId ?? entry.turnId;
@@ -561,7 +654,7 @@ export class Orchestrator extends EventEmitter {
     }
     const rateLimits = extractRateLimits(update.payload);
     if (rateLimits) this.codexRateLimits = rateLimits;
-    this.recordEvent(update.event, entry.issue, update.event, {
+    this.recordEvent(update.event, entry.issue, message, {
       sessionId: entry.sessionId,
       workerHost: entry.workerHost,
     });
@@ -685,10 +778,101 @@ function nextRetryAttempt(entry: RunningEntry): number {
   return (entry.retryAttempt ?? 0) + 1;
 }
 
-function summarize(payload: unknown): string | null {
+export function summarizeRuntimePayload(payload: unknown): string | null {
   if (!payload) return null;
+  const readable = extractAssistantMessage(payload) ?? extractReadableText(payload);
+  if (readable) return truncate(cleanAssistantText(readable), 500);
   const text = JSON.stringify(payload);
-  return text.length <= 500 ? text : `${text.slice(0, 500)}...`;
+  return truncate(text, 500);
+}
+
+function extractAssistantMessage(payload: unknown): string | null {
+  const candidates: string[] = [];
+  collectAssistantText(payload, candidates, false);
+  const cleaned = candidates.map(cleanAssistantText).filter((text) => text.length > 0);
+  return cleaned.at(-1) ?? null;
+}
+
+function extractReadableText(payload: unknown): string | null {
+  const candidates: string[] = [];
+  collectReadableText(payload, candidates, false);
+  const cleaned = candidates.map(cleanAssistantText).filter((text) => text.length > 0);
+  return cleaned.at(-1) ?? null;
+}
+
+function collectAssistantText(
+  value: unknown,
+  candidates: string[],
+  assistantContext: boolean,
+): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectAssistantText(item, candidates, assistantContext);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role.toLowerCase() : "";
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  const isAssistant =
+    assistantContext ||
+    role === "assistant" ||
+    type === "assistant" ||
+    type === "agentmessage" ||
+    type === "assistant_message" ||
+    type === "output_text" ||
+    type === "message";
+
+  if (isAssistant) {
+    for (const key of ["text", "content", "message", "markdown"]) {
+      const text = stringFrom(record[key]);
+      if (text) candidates.push(text);
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    collectAssistantText(nested, candidates, isAssistant);
+  }
+}
+
+function cleanAssistantText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function stringFrom(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function collectReadableText(value: unknown, candidates: string[], textContext: boolean): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectReadableText(item, candidates, textContext);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  const method = typeof record.method === "string" ? record.method.toLowerCase() : "";
+  const isTextContext =
+    textContext ||
+    type === "text" ||
+    type === "agentmessage" ||
+    type === "output_text" ||
+    type === "assistant_message" ||
+    type === "message" ||
+    method.includes("message") ||
+    method.includes("notification");
+
+  for (const key of ["text", "content", "message", "summary", "delta", "output", "reason"]) {
+    const text = stringFrom(record[key]);
+    if (text && (isTextContext || key !== "type")) candidates.push(text);
+  }
+
+  for (const nested of Object.values(record)) {
+    collectReadableText(nested, candidates, isTextContext);
+  }
+}
+
+function truncate(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
 }
 
 function extractAbsoluteTokenTotals(

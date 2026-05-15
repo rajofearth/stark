@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { defaultLogFile } from "./logging/logger.js";
@@ -29,9 +28,6 @@ async function main(argv: string[]): Promise<void> {
   }
 
   const workflowPath = resolve(program.args[0] ?? "WORKFLOW.md");
-  if (!existsSync(workflowPath) || !statSync(workflowPath).isFile()) {
-    throw new Error(`Workflow file not found: ${workflowPath}`);
-  }
 
   const logsRoot = options.logsRoot ? resolve(options.logsRoot) : undefined;
   const dashboardEnabledOverride =

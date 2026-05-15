@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { watch, FSWatcher } from "chokidar";
 import { parse } from "yaml";
@@ -42,6 +42,51 @@ export async function loadWorkflow(path = workflowFilePath): Promise<WorkflowDef
     throw new WorkflowError({ code: "missing_workflow_file", path, reason });
   }
   return parseWorkflow(content);
+}
+
+export function defaultWorkflow(): WorkflowDefinition {
+  return parseWorkflow(`---
+tracker:
+  kind: memory
+polling:
+  interval_ms: 5000
+workspace:
+  root: ./.STARK-workspaces
+agent:
+  max_concurrent_agents: 1
+  max_turns: 12
+codex:
+  approval_policy: never
+  thread_sandbox: workspace-write
+server:
+  port: 4000
+---
+You are S.T.A.R.K, a Slack-controlled autonomous coding agent.
+
+Issue context:
+Identifier: {{ issue.identifier }}
+Title: {{ issue.title }}
+Current status: {{ issue.state }}
+Labels: {{ issue.labels }}
+
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+
+Operating rules:
+
+1. Work inside the provided workspace only.
+2. Decide the lightest useful response: answer directly for informational asks, inspect files for context, and run commands only when they help complete or validate the request.
+3. Treat Slack-created work as ad-hoc unless the user explicitly mentions a Linear issue. Do not query or mutate Linear as part of casual Slack chat.
+4. If the task is ambiguous, explain the specific missing decision so S.T.A.R.K can ask the Slack thread.
+5. Prefer small, reviewable changes and report validation results clearly.
+6. Write final responses as Slack-ready updates: concise, direct, and clear about what started, what changed, how it was validated, local URLs, blockers, and next steps.
+7. Do not expose secrets, tokens, or private environment values in responses.
+8. For risky actions such as publishing, deleting, creating repositories, or filing PRs, rely on S.T.A.R.K approval gates.
+`);
 }
 
 export function parseWorkflow(content: string): WorkflowDefinition {
@@ -99,9 +144,9 @@ export class WorkflowStore {
   }
 
   async forceReload(): Promise<void> {
-    const workflow = await loadWorkflow(this.path);
+    const workflow = existsSync(this.path) ? await loadWorkflow(this.path) : defaultWorkflow();
     this.workflow = workflow;
-    this.stamp = currentStamp(this.path);
+    this.stamp = existsSync(this.path) ? currentStamp(this.path) : "default";
   }
 
   private scheduleReload(): void {
@@ -117,7 +162,7 @@ export class WorkflowStore {
   }
 
   private async reloadIfStampChanged(): Promise<void> {
-    const stamp = currentStamp(this.path);
+    const stamp = existsSync(this.path) ? currentStamp(this.path) : "default";
     if (stamp === this.stamp) return;
     try {
       await this.forceReload();
