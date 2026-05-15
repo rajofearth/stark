@@ -58,6 +58,8 @@ function handleServerEvent(pkt) {
 
     case 'message.started':
       if (pkt.conversation) upsertConversation(pkt.conversation, true);
+      setComposerBusy(true);
+      applyStatsUpdate(pkt.threadId || (pkt.conversation && pkt.conversation.threadId) || '', { status: 'working' });
       startAssistantMessage();
       break;
 
@@ -68,6 +70,8 @@ function handleServerEvent(pkt) {
     case 'message.completed':
       finishAssistantMessage(pkt.content || '');
       if (pkt.conversation) upsertConversation(pkt.conversation, true);
+      applyStatsUpdate(pkt.threadId || (pkt.conversation && pkt.conversation.threadId) || '', { status: 'idle' });
+      setComposerBusy(false);
       break;
 
     case 'plan.update': {
@@ -75,6 +79,14 @@ function handleServerEvent(pkt) {
       if (!pkt.threadId || (conv && (conv.threadId === pkt.threadId || conv.codexThreadId === pkt.threadId))) updatePlanPanelFromPlan(pkt.plan);
       break;
     }
+
+    case 'stats.update':
+      applyStatsUpdate(pkt.threadId || '', pkt.stats || {});
+      break;
+
+    case 'file.update':
+      applyFileUpdate(pkt.threadId || '', pkt.file || {});
+      break;
 
     case 'runtime.activity':
     case 'runtime.tool':
@@ -84,6 +96,8 @@ function handleServerEvent(pkt) {
     case 'message.error':
     case 'turn_failed':
       hideTyping();
+      setComposerBusy(false);
+      applyStatsUpdate(pkt.threadId || '', { status: 'error' });
       App.pendingAssistant = null;
       inject(wrap, buildSysMsg('Stark run failed', pkt.message || pkt.reason || 'An error occurred.', [], true));
       scrollBottom(true);
@@ -91,6 +105,8 @@ function handleServerEvent(pkt) {
 
     case 'approval_required':
       hideTyping();
+      setComposerBusy(false);
+      applyStatsUpdate(pkt.threadId || '', { status: 'approval required' });
       inject(wrap, buildSysMsg('Approval required', 'This direct webchat currently supports auto-approved runs only.', [], true));
       scrollBottom(true);
       break;

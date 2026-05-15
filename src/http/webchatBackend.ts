@@ -215,6 +215,11 @@ export class WebchatBackend {
           if (webEvent) ws.send(webEvent);
           const plan = extractPlan(event.payload);
           if (plan) ws.send({ event: "plan.update", plan, threadId: conv.threadId });
+          const stats = extractChatStats(event.payload);
+          if (stats) ws.send({ event: "stats.update", stats, threadId: conv.threadId });
+          for (const file of extractFileUpdates(event.payload)) {
+            ws.send({ event: "file.update", file, threadId: conv.threadId });
+          }
           const extracted = extractAssistantText(event.payload, text);
           const delta = nextAssistantDelta(streamedText, extracted);
           if (!delta) return;
@@ -692,10 +697,12 @@ function compactRuntimeEvent(event: RuntimeEvent): Record<string, unknown> {
 }
 
 function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | null {
-  const payload = event.payload;
+  const payload = event.payload as Record<string, unknown>;
   const method = firstString(path(payload, ["method"]), path(payload, ["type"]), event.event);
   if (!method) return null;
   if (event.event === "session_started" || event.event === "turn_completed") return null;
+  const itemEvent = runtimeItemEventForWebchat(payload, method);
+  if (itemEvent) return itemEvent;
   if (event.event === "turn_failed" || event.event === "turn_cancelled") {
     return {
       event: "runtime.activity",
@@ -713,7 +720,8 @@ function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | 
       detail: truncateText(toolOrCommandName(payload) || humanizeEventName(method), 160),
     };
   }
-  if (isToolOutputDeltaEvent(payload)) return null;
+  const deltaEvent = runtimeDeltaEventForWebchat(payload, method);
+  if (deltaEvent) return deltaEvent;
   if (
     event.event === "tool_call_completed" ||
     event.event === "tool_call_failed" ||
@@ -742,7 +750,123 @@ function runtimeEventForWebchat(event: RuntimeEvent): Record<string, unknown> | 
   ) {
     return null;
   }
-  return null;
+  return {
+    event: "runtime.activity",
+    kind: "event",
+    title: truncateText(humanizeEventName(method), 90),
+    key: runtimeEventKey(payload) || method,
+    detail: summarizeRuntimePayload(payload),
+  };
+}
+
+function runtimeItemEventForWebchat(
+  payload: Record<string, unknown>,
+  method: string,
+): Record<string, unknown> | null {
+  const item = (path(payload, ["params", "item"]) ?? path(payload, ["item"])) as
+    | Record<string, unknown>
+    | undefined;
+  if (!item || typeof item !== "object") return null;
+  const type = firstString(item.type).toLowerCase();
+  if (!type || /usermessage|agentmessage|reasoning|plan/.test(type)) return null;
+  const status = itemStatus(method, item);
+  const key = firstString(
+    item.id,
+    path(payload, ["params", "itemId"]),
+    path(payload, ["params", "item_id"]),
+    type,
+  );
+  const title = runtimeItemTitle(type, item);
+  return {
+    event: "runtime.tool",
+    status,
+    title: truncateText(title, 120),
+    key,
+    detail: runtimeItemDetail(type, item),
+  };
+}
+
+function runtimeDeltaEventForWebchat(
+  payload: Record<string, unknown>,
+  method: string,
+): Record<string, unknown> | null {
+  if (!isToolOutputDeltaEvent(payload)) return null;
+  const itemId = firstString(
+    path(payload, ["params", "itemId"]),
+    path(payload, ["params", "item_id"]),
+  );
+  return {
+    event: "runtime.tool",
+    status: "running",
+    title: truncateText(humanizeEventName(method), 90),
+    key: itemId || runtimeEventKey(payload) || method,
+    detail: truncateText(extractText(payload), 240),
+  };
+}
+
+function itemStatus(method: string, item: Record<string, unknown>): string {
+  const status = firstString(item.status).toLowerCase();
+  if (status) return status;
+  if (/completed/i.test(method)) return "completed";
+  if (/failed|error/i.test(method)) return "failed";
+  if (/started|delta|updated/i.test(method)) return "running";
+  return "updated";
+}
+
+function runtimeItemTitle(type: string, item: Record<string, unknown>): string {
+  if (type === "commandexecution") return commandToText(path(item, ["command"])) || "Command";
+  if (type === "filechange") return "File changes";
+  if (type === "mcptoolcall")
+    return (
+      [firstString(item.server), firstString(item.tool)].filter(Boolean).join(" · ") || "MCP tool"
+    );
+  if (type === "dynamictoolcall") return firstString(item.tool, item.name) || "Dynamic tool";
+  if (type === "collabtoolcall") return firstString(item.tool) || "Collaboration tool";
+  if (type === "websearch")
+    return `Web search${firstString(item.query) ? `: ${firstString(item.query)}` : ""}`;
+  if (type === "imageview") return `Image: ${firstString(item.path) || "viewed"}`;
+  if (type === "contextcompaction") return "Context compaction";
+  if (type === "enteredreviewmode") return "Entered review mode";
+  if (type === "exitedreviewmode") return "Review completed";
+  return humanizeEventName(type);
+}
+
+function runtimeItemDetail(type: string, item: Record<string, unknown>): string {
+  if (type === "commandexecution") {
+    return truncateText(
+      firstString(item.aggregatedOutput, item.output, item.error) ||
+        [
+          firstString(item.cwd),
+          firstString(item.exitCode) ? `exit ${firstString(item.exitCode)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      240,
+    );
+  }
+  if (type === "filechange") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    return changes
+      .map(
+        (change) =>
+          firstString(path(change, ["kind"]), path(change, ["type"]), "change") +
+          ": " +
+          firstString(path(change, ["path"]), path(change, ["filePath"])),
+      )
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (type === "mcptoolcall" || type === "dynamictoolcall" || type === "collabtoolcall") {
+    return truncateText(firstString(item.result, item.error, item.arguments, item.status), 240);
+  }
+  if (type === "websearch")
+    return truncateText(
+      firstString(item.query, path(item, ["action", "query"]), path(item, ["action", "url"])),
+      240,
+    );
+  if (type === "imageview") return firstString(item.path);
+  if (type === "exitedreviewmode") return truncateText(firstString(item.review), 240);
+  return truncateText(firstString(item.status, item.text, item.summary), 240);
 }
 
 function extractAssistantText(value: unknown, userText = ""): string {
@@ -893,8 +1017,8 @@ function runtimeEventKey(value: unknown): string {
 
 function toolOrCommandName(value: unknown): string {
   const command = path(value, ["params", "command"]);
-  if (Array.isArray(command) && command.length)
-    return command.map((part) => String(part)).join(" ");
+  const commandText = commandToText(command);
+  if (commandText) return commandText;
   return firstString(
     path(value, ["params", "tool"]),
     path(value, ["params", "toolName"]),
@@ -907,6 +1031,21 @@ function toolOrCommandName(value: unknown): string {
     path(value, ["params", "toolCall", "name"]),
     path(value, ["method"]),
   );
+}
+
+function commandToText(command: unknown): string {
+  if (Array.isArray(command) && command.length)
+    return command.map((part) => String(part)).join(" ");
+  if (typeof command === "string") return command;
+  if (command && typeof command === "object") {
+    return firstString(
+      path(command, ["command"]),
+      path(command, ["cmd"]),
+      path(command, ["text"]),
+      path(command, ["argv"]),
+    );
+  }
+  return "";
 }
 
 function summarizeRuntimePayload(value: unknown): string {
@@ -1031,6 +1170,143 @@ function extractPlan(value: unknown): unknown {
     path(value, ["params", "item", "plan"]) ??
     path(value, ["item", "plan"])
   );
+}
+
+function extractChatStats(value: unknown): Record<string, unknown> | null {
+  const method = firstString(path(value, ["method"]), path(value, ["type"]));
+  const usage =
+    path(value, ["params", "tokenUsage", "total"]) ??
+    path(value, ["tokenUsage", "total"]) ??
+    path(value, ["info", "total_token_usage"]) ??
+    path(value, ["params", "usage"]) ??
+    path(value, ["params", "tokenUsage"]) ??
+    path(value, ["params", "turn", "usage"]) ??
+    path(value, ["params", "item", "usage"]) ??
+    path(value, ["usage"]) ??
+    path(value, ["tokenUsage"]);
+  const stats: Record<string, unknown> = {};
+  const model = firstString(
+    path(value, ["params", "model"]),
+    path(value, ["params", "turn", "model"]),
+    path(value, ["params", "thread", "model"]),
+    path(value, ["params", "thread", "modelSlug"]),
+    path(value, ["model"]),
+  );
+  if (model) stats.model = model;
+  const status = firstString(
+    path(value, ["params", "status"]),
+    path(value, ["params", "turn", "status"]),
+  );
+  if (status) stats.status = status;
+  const turnId = firstString(
+    path(value, ["params", "turnId"]),
+    path(value, ["params", "turn", "id"]),
+  );
+  if (turnId) stats.turnId = turnId;
+  const threadId = firstString(
+    path(value, ["params", "threadId"]),
+    path(value, ["params", "thread", "id"]),
+  );
+  if (threadId) stats.threadId = threadId;
+  const totalTokens = firstNumber(
+    path(usage, ["totalTokens"]),
+    path(usage, ["total_tokens"]),
+    path(usage, ["tokens"]),
+    path(value, ["params", "totalTokens"]),
+  );
+  const inputTokens = firstNumber(
+    path(usage, ["inputTokens"]),
+    path(usage, ["input_tokens"]),
+    path(usage, ["promptTokens"]),
+  );
+  const outputTokens = firstNumber(
+    path(usage, ["outputTokens"]),
+    path(usage, ["output_tokens"]),
+    path(usage, ["completionTokens"]),
+  );
+  const cachedTokens = firstNumber(
+    path(usage, ["cachedInputTokens"]),
+    path(usage, ["cached_input_tokens"]),
+  );
+  const contextWindow = firstNumber(
+    path(usage, ["contextWindow"]),
+    path(usage, ["context_window"]),
+    path(value, ["params", "contextWindow"]),
+  );
+  const cost = firstNumber(
+    path(usage, ["costUsd"]),
+    path(usage, ["cost_usd"]),
+    path(value, ["params", "costUsd"]),
+  );
+  const calculatedTotal = totalTokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0) || null);
+  if (typeof calculatedTotal === "number") stats.totalTokens = calculatedTotal;
+  if (typeof inputTokens === "number") stats.inputTokens = inputTokens;
+  if (typeof outputTokens === "number") stats.outputTokens = outputTokens;
+  if (typeof cachedTokens === "number") stats.cachedTokens = cachedTokens;
+  if (typeof contextWindow === "number") stats.contextWindow = contextWindow;
+  if (typeof cost === "number") stats.costUsd = cost;
+  if (method === "thread/tokenUsage/updated" || Object.keys(stats).length > 0) return stats;
+  return null;
+}
+
+function extractFileUpdates(value: unknown): Array<Record<string, unknown>> {
+  const method = firstString(path(value, ["method"]), path(value, ["type"]));
+  const item = path(value, ["params", "item"]) ?? path(value, ["item"]);
+  const changes = path(item, ["changes"]) ?? path(value, ["params", "changes"]);
+  const files: Array<Record<string, unknown>> = [];
+  const directPath = firstString(
+    path(item, ["path"]),
+    path(item, ["filePath"]),
+    path(value, ["params", "path"]),
+    path(value, ["params", "filePath"]),
+  );
+  if (
+    directPath &&
+    /file|diff|imageView|fs\//i.test(`${method} ${firstString(path(item, ["type"]))}`)
+  ) {
+    files.push({
+      path: directPath,
+      kind: firstString(path(item, ["type"]), "file"),
+      status: firstString(path(item, ["status"]), path(value, ["params", "status"])),
+    });
+  }
+  if (Array.isArray(changes)) {
+    for (const change of changes) {
+      const filePath = firstString(path(change, ["path"]), path(change, ["filePath"]));
+      if (!filePath) continue;
+      files.push({
+        path: filePath,
+        kind: firstString(path(change, ["kind"]), path(change, ["type"]), "fileChange"),
+        status: firstString(path(item, ["status"]), path(value, ["params", "status"])),
+      });
+    }
+  }
+  const diff = path(value, ["params", "diff"]);
+  if (method === "turn/diff/updated" && typeof diff === "string") {
+    for (const filePath of pathsFromUnifiedDiff(diff))
+      files.push({ path: filePath, kind: "diff", status: "updated" });
+  }
+  return files;
+}
+
+function pathsFromUnifiedDiff(diff: string): string[] {
+  const paths = new Set<string>();
+  for (const line of diff.split("\n")) {
+    const match = /^(?:\+\+\+|---)\s+(?:a\/|b\/)?(.+)$/.exec(line.trim());
+    if (!match) continue;
+    const filePath = match[1].trim();
+    if (filePath && filePath !== "/dev/null") paths.add(filePath);
+  }
+  return Array.from(paths);
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value)))
+      return Number(value);
+  }
+  return null;
 }
 
 function extractText(value: unknown): string {

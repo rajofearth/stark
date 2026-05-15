@@ -1,7 +1,7 @@
 /* App state, conversation management, orchestrator polling (embedded as JS) */
 export const appScript = `
 /* ─── App state ─────────────────────────────────────────────────────────── */
-const App = { conv: null, ws: null, pollTimer: null, convs: new Map(), pendingAssistant: null };
+const App = { conv: null, ws: null, pollTimer: null, convs: new Map(), pendingAssistant: null, busy: false, statsByConv: new Map(), filesByConv: new Map() };
 
 function nowMs(){ return Date.now(); }
 function timeAgo(value) {
@@ -110,8 +110,90 @@ function mergeAliases(a, b) {
 
 function updateHeader(conv) {
   document.getElementById('chat-title-text').textContent = conv ? conv.title : 'New Conversation';
-  document.getElementById('meta-agents').textContent = 'Direct Stark';
+  document.getElementById('meta-agents').textContent = App.busy ? 'Direct Stark · working' : 'Direct Stark';
   document.getElementById('meta-time').textContent = conv ? timeAgo(conv.updatedAt) : '—';
+  updateChatDetails(conv);
+}
+
+function setComposerBusy(busy) {
+  App.busy = !!busy;
+  const input = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('send-btn');
+  if (input) {
+    input.disabled = App.busy;
+    input.placeholder = App.busy ? 'Stark is working…' : 'Ask anything or @mention an agent…';
+  }
+  if (sendBtn) {
+    sendBtn.classList.toggle('working', App.busy);
+    sendBtn.disabled = App.busy || !(input && input.value.trim());
+    sendBtn.title = App.busy ? 'Stark is working' : 'Send (Enter)';
+  }
+  updateHeader(currentConv());
+}
+
+function statsKeyForThread(threadId) {
+  const conv = threadId ? findConversationByThread(threadId) : null;
+  return (conv && conv.id) || App.conv || threadId || 'draft';
+}
+
+function applyStatsUpdate(threadId, stats) {
+  const key = statsKeyForThread(threadId);
+  const prev = App.statsByConv.get(key) || {};
+  App.statsByConv.set(key, Object.assign({}, prev, stats || {}, { threadId: threadId || prev.threadId, updatedAt: nowMs() }));
+  if (key === App.conv || !App.conv) updateChatDetails(currentConv());
+}
+
+function applyFileUpdate(threadId, file) {
+  if (!file || !file.path) return;
+  const key = statsKeyForThread(threadId);
+  const files = App.filesByConv.get(key) || [];
+  const existing = files.find(f => f.path === file.path);
+  const next = Object.assign({}, existing || {}, file, { updatedAt: nowMs() });
+  if (existing) files.splice(files.indexOf(existing), 1, next);
+  else files.unshift(next);
+  App.filesByConv.set(key, files.slice(0, 50));
+  if (key === App.conv || !App.conv) updateChatDetails(currentConv());
+}
+
+function updateChatDetails(conv) {
+  const stats = App.statsByConv.get(App.conv) || {};
+  setText('det-created', conv ? new Date(conv.createdAt || Date.now()).toLocaleString() : '—');
+  setText('det-thread', conv && conv.threadId ? shortId(conv.threadId) : '—');
+  setText('det-turn', stats.turnId ? shortId(stats.turnId) : '—');
+  setText('det-model', stats.model || 'Stark App Server');
+  setText('det-status', App.busy ? 'working' : (stats.status || 'idle'));
+  setText('det-tokens', typeof stats.totalTokens === 'number' ? fmtN(stats.totalTokens) : '—');
+  setText('det-io-tokens', (typeof stats.inputTokens === 'number' || typeof stats.outputTokens === 'number') ? fmtN(stats.inputTokens || 0) + ' / ' + fmtN(stats.outputTokens || 0) : '—');
+  setText('det-cached-tokens', typeof stats.cachedTokens === 'number' ? fmtN(stats.cachedTokens) : '—');
+  setText('det-context', typeof stats.contextWindow === 'number' ? fmtN(stats.contextWindow) : '—');
+  setText('det-cost', typeof stats.costUsd === 'number' ? '$' + stats.costUsd.toFixed(4) : '—');
+  renderFilesWorked();
+}
+
+function renderFilesWorked() {
+  const list = document.getElementById('det-files');
+  if (!list) return;
+  const files = App.filesByConv.get(App.conv) || [];
+  if (!files.length) {
+    list.innerHTML = '<div class="note-box compact">No file activity yet.</div>';
+    return;
+  }
+  list.innerHTML = files.slice(0, 12).map(f => {
+    const p = String(f.path || '');
+    const label = esc(p);
+    const pathHtml = p.startsWith('/') ? '<a class="md-link" href="' + attr(fileUrl(p)) + '" target="_blank" rel="noreferrer">' + label + '</a>' : label;
+    return '<div class="file-worked"><div class="file-worked-path">' + pathHtml + '</div><div class="file-worked-meta">' + esc(f.kind || 'file') + (f.status ? ' · ' + esc(f.status) : '') + '</div></div>';
+  }).join('');
+}
+
+function setText(id, text) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = text;
+}
+
+function shortId(value) {
+  value = String(value || '');
+  return value.length > 18 ? value.slice(0, 10) + '…' + value.slice(-6) : value;
 }
 
 async function loadConv(id) {
@@ -381,7 +463,7 @@ function renderPlanPanel(items, source) {
 /* ─── Send message ──────────────────────────────────────────────────────── */
 async function sendMsg(text) {
   text = String(text || '').trim();
-  if (!text) return;
+  if (!text || App.busy) return;
 
   let conv = currentConv();
   if (!conv) conv = await upsertConversation({ id: 'draft-' + Date.now(), title: convTitleFromText(text), createdAt: nowMs(), updatedAt: nowMs() }, true);
@@ -396,6 +478,8 @@ async function sendMsg(text) {
   scrollBottom(true);
 
   showTyping('Stark', 'S');
+  setComposerBusy(true);
+  applyStatsUpdate(conv.threadId || '', { status: 'working' });
   const payload = { type: 'message.send', convId: App.conv, threadId: conv.threadId || '', title: conv.title, text };
   const sent = wsSend(payload);
   if (!sent) {
@@ -409,8 +493,11 @@ async function sendMsg(text) {
       if (data.conversation) await upsertConversation(data.conversation, true);
       startAssistantMessage();
       await finishAssistantMessage(data.content || '');
+      setComposerBusy(false);
+      applyStatsUpdate((data.conversation && data.conversation.threadId) || conv.threadId || '', { status: 'idle' });
     } catch(e) {
       hideTyping();
+      setComposerBusy(false);
       inject(wrap, buildSysMsg('Stark is not connected', e.message || 'Unable to send the message.', [], true));
       scrollBottom(true);
     }
@@ -440,6 +527,7 @@ function applySnapshot(snap) {
   document.getElementById('det-agents').textContent    = (counts.running||0) + ' / ' + ((counts.running||0)+(health.available_slots||0));
   document.getElementById('det-tokens').textContent    = fmtN(totals.total_tokens);
   document.getElementById('det-runtime').textContent   = fmtSec(totals.seconds_running);
+  updateChatDetails(currentConv());
 
   const liveSec  = document.getElementById('live-section');
   const liveList = document.getElementById('live-agent-list');
@@ -496,7 +584,7 @@ function bindEvents() {
   const input   = document.getElementById('chat-input');
   const sendBtn = document.getElementById('send-btn');
   input.addEventListener('input', () => {
-    sendBtn.disabled = !input.value.trim();
+    sendBtn.disabled = App.busy || !input.value.trim();
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
   });
@@ -512,6 +600,7 @@ function bindEvents() {
 }
 
 function doSend() {
+  if (App.busy) return;
   const input = document.getElementById('chat-input');
   const text  = input.value.trim();
   if (!text) return;

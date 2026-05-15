@@ -140,13 +140,21 @@ function detailsPane(): string {
       <span class="rp-label">Conversation Details</span>
     </div>
     <div class="det-row"><span class="det-k">Created</span>      <span class="det-v" id="det-created">—</span></div>
-    <div class="det-row"><span class="det-k">Model</span>        <span class="det-v">Stark App Server</span></div>
+    <div class="det-row"><span class="det-k">Thread</span>       <span class="det-v" id="det-thread">—</span></div>
+    <div class="det-row"><span class="det-k">Turn</span>         <span class="det-v" id="det-turn">—</span></div>
+    <div class="det-row"><span class="det-k">Model</span>        <span class="det-v" id="det-model">Stark App Server</span></div>
     <div class="det-row"><span class="det-k">Workspace</span>    <span class="det-v" id="det-workspace">—</span></div>
     <div class="det-row"><span class="det-k">Tracker</span>      <span class="det-v" id="det-tracker">—</span></div>
     <div class="det-row"><span class="det-k">Status</span>       <span class="det-v" id="det-status">—</span></div>
     <div class="det-row"><span class="det-k">Agents</span>       <span class="det-v" id="det-agents">—</span></div>
     <div class="det-row"><span class="det-k">Total tokens</span> <span class="det-v" id="det-tokens">—</span></div>
+    <div class="det-row"><span class="det-k">Input / output</span><span class="det-v" id="det-io-tokens">—</span></div>
+    <div class="det-row"><span class="det-k">Cached</span>       <span class="det-v" id="det-cached-tokens">—</span></div>
+    <div class="det-row"><span class="det-k">Context</span>      <span class="det-v" id="det-context">—</span></div>
+    <div class="det-row"><span class="det-k">Cost</span>         <span class="det-v" id="det-cost">—</span></div>
     <div class="det-row"><span class="det-k">Runtime</span>      <span class="det-v" id="det-runtime">—</span></div>
+    <div class="rp-sec" style="padding:10px 14px 4px;"><span class="rp-label">Files worked with</span></div>
+    <div id="det-files"><div class="note-box compact">No file activity yet.</div></div>
     <div class="det-row">
       <span class="det-k">Pipeline</span>
       <span class="det-v" style="color:var(--t-m);font-size:10px;">Direct Stark</span>

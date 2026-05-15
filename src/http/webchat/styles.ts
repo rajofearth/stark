@@ -499,6 +499,15 @@ html, body { height: 100%; overflow: hidden; }
 }
 #send-btn:hover { background: var(--w); transform: scale(1.06); }
 #send-btn:disabled { background: var(--bg-4); color: var(--t-m); cursor: not-allowed; transform: none; }
+#send-btn.working { background: var(--bg-4); color: var(--t-s); cursor: wait; }
+#send-btn.working::before {
+  content: ""; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid var(--t-m); border-top-color: var(--t-p);
+  animation: stark-spin 0.8s linear infinite;
+}
+#send-btn.working svg { display: none; }
+#chat-input:disabled { color: var(--t-m); cursor: wait; }
+@keyframes stark-spin { to { transform: rotate(360deg); } }
 
 /* ── Empty state ────────────────────────────────────────── */
 #empty-state { display: none; }
@@ -653,6 +662,14 @@ html, body { height: 100%; overflow: hidden; }
   background: var(--bg-2);
 }
 .note-box code { color: var(--t-s); font-family: "Menlo","Monaco",monospace; font-size: 9px; }
+.note-box.compact { margin-top: 4px; }
+.file-worked {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 6px 14px; border-bottom: 1px solid var(--bd);
+  font-size: 10px; color: var(--t);
+}
+.file-worked-path { flex: 1; min-width: 0; word-break: break-all; }
+.file-worked-meta { color: var(--t-m); white-space: nowrap; font-size: 9px; }
 
 /* ── Live section ───────────────────────────────────────── */
 #live-section { display: none; }
