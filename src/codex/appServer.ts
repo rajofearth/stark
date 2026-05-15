@@ -175,20 +175,7 @@ export class CodexAppServer {
     const id = payload.id;
     if (method === "item/tool/call" && typeof id !== "undefined") {
       const params = payload.params as Record<string, unknown> | undefined;
-      const toolName =
-        getPath<string>(params, ["toolCall", "name"]) ??
-        getPath<string>(params, ["toolCall", "toolName"]) ??
-        getPath<string>(params, ["call", "name"]) ??
-        getPath<string>(params, ["call", "toolName"]) ??
-        getPath<string>(params, ["name"]) ??
-        getPath<string>(params, ["toolName"]);
-      const args =
-        getPath<unknown>(params, ["toolCall", "arguments"]) ??
-        getPath<unknown>(params, ["toolCall", "input"]) ??
-        getPath<unknown>(params, ["call", "arguments"]) ??
-        getPath<unknown>(params, ["call", "input"]) ??
-        params?.arguments ??
-        params?.input;
+      const { toolName, args } = normalizeToolCall(params);
       const result = await this.toolExecutor.execute(toolName, args);
       this.send(process, { id, result });
       onMessage(
@@ -319,6 +306,56 @@ function isApprovalMethod(method: unknown): boolean {
     method === "applyPatchApproval" ||
     method === "item/fileChange/requestApproval"
   );
+}
+
+export function normalizeToolCall(params: unknown): {
+  toolName: string | null;
+  args: unknown;
+} {
+  const toolName = firstNonBlankString(
+    getPath<string>(params, ["tool"]),
+    getPath<string>(params, ["name"]),
+    getPath<string>(params, ["toolName"]),
+    getPath<string>(params, ["tool_name"]),
+    getPath<string>(params, ["dynamic_tool"]),
+    getPath<string>(params, ["toolCall", "name"]),
+    getPath<string>(params, ["toolCall", "toolName"]),
+    getPath<string>(params, ["tool_call", "name"]),
+    getPath<string>(params, ["tool_call", "tool_name"]),
+    getPath<string>(params, ["call", "name"]),
+    getPath<string>(params, ["call", "toolName"]),
+    getPath<string>(params, ["tool", "name"]),
+    getPath<string>(params, ["function", "name"]),
+    getPath<string>(params, ["item", "name"]),
+    getPath<string>(params, ["item", "toolName"]),
+    getPath<string>(params, ["item", "tool_name"]),
+  );
+  const args =
+    getPath<unknown>(params, ["arguments"]) ??
+    getPath<unknown>(params, ["input"]) ??
+    getPath<unknown>(params, ["toolCall", "arguments"]) ??
+    getPath<unknown>(params, ["toolCall", "input"]) ??
+    getPath<unknown>(params, ["tool_call", "arguments"]) ??
+    getPath<unknown>(params, ["tool_call", "input"]) ??
+    getPath<unknown>(params, ["call", "arguments"]) ??
+    getPath<unknown>(params, ["call", "input"]) ??
+    getPath<unknown>(params, ["tool", "arguments"]) ??
+    getPath<unknown>(params, ["tool", "input"]) ??
+    getPath<unknown>(params, ["function", "arguments"]) ??
+    getPath<unknown>(params, ["function", "input"]) ??
+    getPath<unknown>(params, ["item", "arguments"]) ??
+    getPath<unknown>(params, ["item", "input"]) ??
+    (getPath<unknown>(params, ["query"]) ? params : {});
+  return { toolName, args };
+}
+
+function firstNonBlankString(...values: Array<string | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 function getPath<T>(value: unknown, path: string[]): T | undefined {

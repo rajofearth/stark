@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { normalizeToolCall } from "../src/codex/appServer.js";
 import { DynamicToolExecutor } from "../src/codex/dynamicTool.js";
 import { sortIssuesForDispatch } from "../src/orchestrator.js";
 import { MemoryTracker } from "../src/tracker/index.js";
@@ -20,6 +21,18 @@ describe("tracker and orchestration helpers", () => {
     const result = await tool.execute("linear_graphql", { query: "query Test { viewer { id } }" });
     expect(result.success).toBe(true);
     expect(result.contentItems).toEqual([{ type: "inputText", text: "{}" }]);
+  });
+
+  test("normalizes app-server tool calls that use direct tool field", () => {
+    const normalized = normalizeToolCall({
+      tool: "linear_graphql",
+      callId: "call-90b",
+      arguments: { query: "query Viewer { viewer { id } }" },
+    });
+    expect(normalized).toEqual({
+      toolName: "linear_graphql",
+      args: { query: "query Viewer { viewer { id } }" },
+    });
   });
 });
 

@@ -64,9 +64,33 @@ function normalizeLinearGraphqlArguments(args: unknown): {
   }
   if (!args || typeof args !== "object") throw new Error("invalid_arguments");
   const record = args as Record<string, unknown>;
+  const nested =
+    record.arguments ??
+    record.input ??
+    getNested(record, "toolCall", "arguments") ??
+    getNested(record, "toolCall", "input") ??
+    getNested(record, "tool_call", "arguments") ??
+    getNested(record, "tool_call", "input") ??
+    getNested(record, "item", "arguments") ??
+    getNested(record, "item", "input") ??
+    getNested(record, "function", "arguments") ??
+    getNested(record, "function", "input");
+  if (typeof record.query !== "string" && nested !== undefined) {
+    return normalizeLinearGraphqlArguments(nested);
+  }
   const query = typeof record.query === "string" ? record.query.trim() : "";
   if (!query) throw new Error("missing_query");
   if (record.variables === undefined || record.variables === null) return { query, variables: {} };
+  if (typeof record.variables === "string") {
+    const decodedVariables = tryParseJson(record.variables);
+    if (
+      decodedVariables &&
+      typeof decodedVariables === "object" &&
+      !Array.isArray(decodedVariables)
+    ) {
+      return { query, variables: decodedVariables as Record<string, unknown> };
+    }
+  }
   if (typeof record.variables !== "object" || Array.isArray(record.variables)) {
     throw new Error("invalid_variables");
   }
@@ -80,6 +104,12 @@ function tryParseJson(value: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+function getNested(record: Record<string, unknown>, key: string, nestedKey: string): unknown {
+  const value = record[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return (value as Record<string, unknown>)[nestedKey];
 }
 
 function failure(payload: Record<string, unknown>): Record<string, unknown> {
