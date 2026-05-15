@@ -72,4 +72,13 @@ describe("workflow and config", () => {
     });
     expect(settings.slack.enabled).toBe(true);
   });
+
+  test("does not require approval for agent tasks by default", () => {
+    const settings = parseSettings(defaultWorkflow().config, "/tmp/stark/WORKFLOW.md");
+    expect(settings.slack.requireApprovalFor).toEqual([
+      "artifact_upload",
+      "github_pr",
+      "new_project",
+    ]);
+  });
 });

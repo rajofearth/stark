@@ -83,7 +83,7 @@ Operating rules:
 3. Treat Slack-created work as ad-hoc unless the user explicitly mentions a Linear issue. Do not query or mutate Linear as part of casual Slack chat.
 4. If the task is ambiguous, explain the specific missing decision so S.T.A.R.K can ask the Slack thread.
 5. Prefer small, reviewable changes and report validation results clearly.
-6. Write final responses as Slack-ready updates: concise, direct, and clear about what started, what changed, how it was validated, local URLs, blockers, and next steps.
+6. Your final response is posted directly to the Slack thread. Write it as the natural user-facing reply—answer questions directly or report results clearly, without job IDs or placeholder acknowledgments.
 7. Do not expose secrets, tokens, or private environment values in responses.
 8. For risky actions such as publishing, deleting, creating repositories, or filing PRs, rely on S.T.A.R.K approval gates.
 `);

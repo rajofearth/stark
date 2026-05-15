@@ -5,7 +5,13 @@ import { ApprovalStore, type ApprovalKind, type ApprovalRequest } from "./approv
 import { findArtifacts, type ArtifactMatch } from "./artifacts.js";
 import type { SlackClient } from "./client.js";
 import type { GitHubPrService } from "./github.js";
-import { capabilityText, classifySlackMessage, helpText, isKnownCommand } from "./intents.js";
+import {
+  capabilityText,
+  classifySlackMessage,
+  helpText,
+  isKnownCommand,
+  stripAskPrefix,
+} from "./intents.js";
 
 interface SlackCommandPayload {
   channel_id?: string;
@@ -72,6 +78,7 @@ export class SlackCommandRouter {
     }
     const text = (event.text ?? "").replace(/<@[^>]+>/g, "").trim();
     const response = await this.dispatchMention(text, context);
+    if (!shouldPostSlackResponse(response)) return;
     await this.slack.postMessage({
       channel: context.channel,
       threadTs: context.threadTs,
@@ -91,9 +98,11 @@ export class SlackCommandRouter {
     rawText: string,
     context: CommandContext,
   ): Promise<CommandResponse> {
-    const { name } = parseCommand(rawText);
-    if (isKnownCommand(name)) return this.dispatchCommand(rawText, context);
-    const intent = classifySlackMessage(rawText, this.settingsProvider().slack.commandName);
+    const text = stripAskPrefix(rawText);
+    if (!text) return ephemeral("Say what you want me to do.");
+    const { name } = parseCommand(text);
+    if (isKnownCommand(name)) return this.dispatchCommand(text, context);
+    const intent = classifySlackMessage(text, this.settingsProvider().slack.commandName);
     if (intent.kind === "reply") return ephemeral(intent.text);
     if (intent.kind === "command") return this.dispatchCommand(intent.text, context);
     return this.ask(intent.task, context);
@@ -135,8 +144,6 @@ export class SlackCommandRouter {
           return ephemeral(`Refresh queued: ${JSON.stringify(this.orchestrator.requestRefresh())}`);
         case "issue":
           return this.issue(args);
-        case "ask":
-          return this.ask(args, context);
         case "send":
         case "artifact":
         case "artifacts":
@@ -177,7 +184,7 @@ export class SlackCommandRouter {
   }
 
   private ask(args: string, context: CommandContext): CommandResponse {
-    if (!args.trim()) return ephemeral("Usage: ask <task>");
+    if (!args.trim()) return ephemeral("Say what you want me to do.");
     const payload = { task: args.trim(), context };
     if (this.requiresApproval("ask"))
       return this.requestApproval("ask", context, `Run agent task: ${args.trim()}`, payload);
@@ -278,11 +285,14 @@ export class SlackCommandRouter {
       const response = this.enqueueTask(
         approval.payload as { task: string; context: CommandContext },
       );
-      await this.slack.postMessage({
-        channel: approval.channel,
-        threadTs: approval.threadTs,
-        text: response.text.replace(/^I’m/, "Approved. I’m"),
-      });
+      if (shouldPostSlackResponse(response)) {
+        await this.slack.postMessage({
+          channel: approval.channel,
+          threadTs: approval.threadTs,
+          text: response.text,
+          blocks: response.blocks,
+        });
+      }
       return response;
     }
     if (approval.kind === "artifact_upload") {
@@ -321,11 +331,7 @@ export class SlackCommandRouter {
       thread_ts: payload.context.threadTs,
       queued: Boolean(result.queued),
     });
-    if (result.queued) {
-      return ephemeral(
-        `I’m starting work now as ${issue.identifier}. I’ll reply here when I have an update.`,
-      );
-    }
+    if (result.queued) return silent();
     return ephemeral(
       `I couldn’t start ${issue.identifier}: ${String(result.reason ?? "unknown reason")}`,
     );
@@ -381,6 +387,14 @@ function ephemeral(text: string): CommandResponse {
   return { response_type: "ephemeral", text };
 }
 
+function silent(): CommandResponse {
+  return { response_type: "ephemeral", text: "" };
+}
+
+function shouldPostSlackResponse(response: CommandResponse): boolean {
+  return Boolean(response.text?.trim() || response.blocks?.length);
+}
+
 function slackIssue(task: string, context: CommandContext): Issue {
   const id = `slack-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const identifier = `SLACK-${id.slice(-6).toUpperCase()}`;
@@ -401,8 +415,9 @@ function slackIssue(task: string, context: CommandContext): Issue {
       "- Do not query or update Linear unless the Slack request explicitly asks for Linear work.",
       "- If the request only needs an answer, answer directly and stop; do not invent repo changes.",
       "- Run commands only when they materially help inspect, validate, or complete the requested work.",
-      "- Write updates as Slack-ready messages: concise, direct, and addressed to the requester.",
-      "- When work is complete, summarize changes, validation, local URLs, blockers, and any PR details so S.T.A.R.K can report them back to Slack.",
+      "- Your final assistant message is posted directly to this Slack thread as the user-facing reply.",
+      "- Write that reply naturally: answer the question or report results directly, without job IDs or placeholder acknowledgments.",
+      "- When work is complete, summarize changes, validation, local URLs, blockers, and any PR details in that reply.",
     ]
       .filter(Boolean)
       .join("\n"),

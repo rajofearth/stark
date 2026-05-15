@@ -77,7 +77,7 @@ github:
   allowed_repo_roots: ["~/stark-workspaces"]
 ```
 
-Supported commands include `status`, `refresh`, `issue <id>`, `ask <task>`, `artifact <keywords>`, `approvals`, `approve <id>`, `reject <id>`, `pr <repo-path> [title]`, and `new-project <instructions>`. Risky actions are approval-gated by default.
+Supported commands include `status`, `refresh`, `issue <id>`, `artifact <keywords>`, `approvals`, `approve <id>`, `reject <id>`, `pr <repo-path> [title]`, and `new-project <instructions>`. @mention Stark or send any other text to run an agent task. Artifact uploads, PR creation, and new projects are approval-gated by default; agent tasks run immediately.
 
 ## Cross-Platform Notes
 

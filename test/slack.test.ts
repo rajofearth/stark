@@ -88,4 +88,18 @@ describe("slack integration helpers", () => {
       task: "fix the failing workflow tests",
     });
   });
+
+  test("queues informational requests without an ask prefix", () => {
+    expect(classifySlackMessage("find github profile of preetam gaikwad")).toEqual({
+      kind: "task",
+      task: "find github profile of preetam gaikwad",
+    });
+  });
+
+  test("strips a legacy ask prefix before queuing", () => {
+    expect(classifySlackMessage("ask find github profile of preetam gaikwad")).toEqual({
+      kind: "task",
+      task: "find github profile of preetam gaikwad",
+    });
+  });
 });

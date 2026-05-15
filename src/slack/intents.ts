@@ -9,7 +9,6 @@ const knownCommands = new Set([
   "status",
   "refresh",
   "issue",
-  "ask",
   "send",
   "artifact",
   "artifacts",
@@ -21,8 +20,16 @@ const knownCommands = new Set([
   "project",
 ]);
 
-export function classifySlackMessage(rawText: string, commandName = "/stark"): SlackIntent {
+export function stripAskPrefix(rawText: string): string {
   const text = normalizeWhitespace(rawText);
+  if (/^ask$/i.test(text)) return "";
+  const match = text.match(/^ask\s+([\s\S]+)$/i);
+  return match ? normalizeWhitespace(match[1]) : text;
+}
+
+export function classifySlackMessage(rawText: string, commandName = "/stark"): SlackIntent {
+  const text = stripAskPrefix(rawText);
+  if (!text) return { kind: "reply", text: helpText(commandName) };
   const parsed = parseCommand(text);
   if (parsed.name === "send") {
     const query = cleanActionQuery(parsed.args, [
@@ -53,8 +60,7 @@ export function classifySlackMessage(rawText: string, commandName = "/stark"): S
   const projectRequest = projectRequestFrom(text);
   if (projectRequest) return { kind: "command", text: `new-project ${projectRequest}` };
 
-  if (looksLikeWorkRequest(text)) return { kind: "task", task: text };
-  return { kind: "reply", text: fallbackText(commandName) };
+  return { kind: "task", task: text };
 }
 
 export function isKnownCommand(name: string): boolean {
@@ -64,7 +70,7 @@ export function isKnownCommand(name: string): boolean {
 export function helpText(commandName: string): string {
   return [
     `Usage: ${commandName} <command>`,
-    "Commands: help, status, refresh, issue <id>, ask <task>, artifact <keywords>, approvals, approve <id>, reject <id>, pr <repo-path> [title], new-project <instructions>",
+    "Commands: help, status, refresh, issue <id>, artifact <keywords>, approvals, approve <id>, reject <id>, pr <repo-path> [title], new-project <instructions>",
   ].join("\n");
 }
 
@@ -74,17 +80,10 @@ export function capabilityText(commandName: string): string {
     "",
     "Quick replies: ask what I can do, check status, list approvals, or refresh.",
     "Artifacts: say `send the anvil graphic` and I will look in configured artifact folders.",
-    "Agent work: say `ask <task>` or describe a concrete repo task and I will queue a coding run.",
+    "Agent work: mention me with your request, or use a slash command with the task text.",
     "Projects and PRs: use `new-project <instructions>` or `pr <repo-path> [title]`.",
     "",
-    `Try \`${commandName} status\` or mention me with a concrete task.`,
-  ].join("\n");
-}
-
-function fallbackText(commandName: string): string {
-  return [
-    "I’m not sure whether that needs an agent run.",
-    `Use \`${commandName} ask <task>\` for repo work, \`${commandName} status\` for runtime status, or ask "what can you do?" for examples.`,
+    `Try \`${commandName} status\` or @mention me with what you want done.`,
   ].join("\n");
 }
 
@@ -160,13 +159,6 @@ function projectRequestFrom(text: string): string | null {
     "new",
     "please",
   ]);
-}
-
-function looksLikeWorkRequest(text: string): boolean {
-  if (text.length < 8 || text.endsWith("?")) return false;
-  return /\b(add|build|change|create|debug|fix|implement|improve|make|refactor|remove|run|set up|setup|start|test|update|write)\b/i.test(
-    text,
-  );
 }
 
 function cleanActionQuery(text: string, dropWords: string[]): string | null {

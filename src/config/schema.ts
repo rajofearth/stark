@@ -222,7 +222,6 @@ export function parseSettings(
         env,
       ),
       requireApprovalFor: slack.require_approval_for ?? [
-        "ask",
         "artifact_upload",
         "github_pr",
         "new_project",

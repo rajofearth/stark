@@ -75,7 +75,7 @@ github:
 - `/stark status`
 - `/stark refresh`
 - `/stark issue STARK-123`
-- `/stark ask update the project and file a PR`
+- `/stark update the project and file a PR`
 - `/stark artifact anvil graphic`
 - `/stark approvals`
 - `/stark approve appr-...`
@@ -83,4 +83,4 @@ github:
 - `/stark pr ~/stark-workspaces/STARK-123 "Update landing page"`
 - `/stark new-project openclaw app with auth and dashboard`
 
-By default, agent tasks, artifact uploads, GitHub PR creation, and new project creation require approval before execution.
+By default, artifact uploads, GitHub PR creation, and new project creation require approval before execution. Agent tasks (mentions and free-form messages) run immediately.

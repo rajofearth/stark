@@ -76,7 +76,7 @@ function baseSettings(root: string): Settings {
       publicBaseUrl: null,
       commandName: "/stark",
       artifactRoots: [],
-      requireApprovalFor: ["ask", "artifact_upload", "github_pr", "new_project"],
+      requireApprovalFor: ["artifact_upload", "github_pr", "new_project"],
     },
     github: { enabled: false, allowedRepoRoots: [], prTimeoutMs: 120_000 },
   };
