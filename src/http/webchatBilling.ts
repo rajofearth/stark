@@ -78,6 +78,22 @@ function localDayKey(ms: number): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Every calendar day in [fromMs, toMs] (local) so charts have a continuous x-axis even with sparse usage. */
+function enumerateDayKeysInRange(fromMs: number, toMs: number): string[] {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return [];
+  const start = new Date(fromMs);
+  const end = new Date(toMs);
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const keys: string[] = [];
+  const cap = 400;
+  while (cur.getTime() <= last.getTime() && keys.length < cap) {
+    keys.push(localDayKey(cur.getTime()));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return keys;
+}
+
 export interface BillingSummaryJson {
   fromMs: number;
   toMs: number;
@@ -154,11 +170,19 @@ export function buildBillingSummary(
     dayMap.set(day, dagg);
   }
 
-  const sortedDays = Array.from(dayMap.keys()).sort();
+  const emptyBucket = (): { tokens: number; reportedUsd: number; estimatedUsd: number } => ({
+    tokens: 0,
+    reportedUsd: 0,
+    estimatedUsd: 0,
+  });
+  let sortedDays = enumerateDayKeysInRange(fromMs, toMs);
+  if (sortedDays.length === 0) {
+    sortedDays = Array.from(dayMap.keys()).sort();
+  }
   let cumR = 0;
   let cumE = 0;
   const daily = sortedDays.map((day) => {
-    const d = dayMap.get(day)!;
+    const d = dayMap.get(day) ?? emptyBucket();
     cumR += d.reportedUsd;
     cumE += d.estimatedUsd;
     return {

@@ -34,6 +34,7 @@ function normalizeConv(raw) {
 
 function renderConversations() {
   const list = document.getElementById('conv-list');
+  if (!list) return;
   const convs = Array.from(App.convs.values()).sort((a,b) => {
     const at = typeof a.updatedAt === 'number' ? a.updatedAt : Date.parse(a.updatedAt || '') || 0;
     const bt = typeof b.updatedAt === 'number' ? b.updatedAt : Date.parse(b.updatedAt || '') || 0;
@@ -675,29 +676,34 @@ function applySnapshot(snap) {
   });
   const running = snap.running       || [];
 
-  document.getElementById('badge-inbox').textContent  = (counts.running||0) + (counts.retrying||0);
+  const badgeInbox = document.getElementById('badge-inbox');
+  if (badgeInbox) badgeInbox.textContent = (counts.running||0) + (counts.retrying||0);
   const agBadge = document.getElementById('badge-agents');
-  agBadge.textContent = counts.running || 0;
-  agBadge.className   = 'nav-badge' + (counts.running > 0 ? ' live' : '');
+  if (agBadge) {
+    agBadge.textContent = counts.running || 0;
+    agBadge.className = 'nav-badge' + (counts.running > 0 ? ' live' : '');
+  }
 
-  document.getElementById('det-created').textContent  = snap.generated_at ? new Date(snap.generated_at).toLocaleString() : '—';
-  document.getElementById('det-workspace').textContent = tracker.project_slug || '—';
-  document.getElementById('det-tracker').textContent   = tracker.kind || 'memory';
-  document.getElementById('det-status').textContent    = health.polling || '—';
-  document.getElementById('det-agents').textContent    = (counts.running||0) + ' / ' + ((counts.running||0)+(health.available_slots||0));
-  document.getElementById('det-tokens').textContent    = fmtN(totals.total_tokens);
-  document.getElementById('det-runtime').textContent   = fmtSec(totals.seconds_running);
+  setText('det-created', snap.generated_at ? new Date(snap.generated_at).toLocaleString() : '—');
+  setText('det-workspace', tracker.project_slug || '—');
+  setText('det-tracker', tracker.kind || 'memory');
+  setText('det-status', health.polling || '—');
+  setText('det-agents', (counts.running||0) + ' / ' + ((counts.running||0)+(health.available_slots||0)));
+  setText('det-tokens', fmtN(totals.total_tokens));
+  setText('det-runtime', fmtSec(totals.seconds_running));
   updateChatDetails(currentConv());
 
   const liveSec  = document.getElementById('live-section');
   const liveList = document.getElementById('live-agent-list');
   const liveCnt  = document.getElementById('live-count');
-  if (running.length > 0) {
-    liveSec.style.display = '';
-    liveCnt.textContent   = running.length;
-    liveList.innerHTML    = running.map(r => '<div class="ag-item"><div class="ag-av">' + String(r.issue_identifier||'AG').slice(0,2).toUpperCase() + '</div><div class="ag-name">' + esc(r.issue_identifier||'Agent') + '</div><div class="ag-dot"></div></div>').join('');
-  } else {
-    liveSec.style.display = 'none';
+  if (liveSec && liveList && liveCnt) {
+    if (running.length > 0) {
+      liveSec.style.display = '';
+      liveCnt.textContent   = running.length;
+      liveList.innerHTML    = running.map(r => '<div class="ag-item"><div class="ag-av">' + String(r.issue_identifier||'AG').slice(0,2).toUpperCase() + '</div><div class="ag-name">' + esc(r.issue_identifier||'Agent') + '</div><div class="ag-dot"></div></div>').join('');
+    } else {
+      liveSec.style.display = 'none';
+    }
   }
 }
 
@@ -800,63 +806,147 @@ function drawBillingChart(summary) {
   const metricEl = document.getElementById('billing-metric');
   const metric = metricEl && metricEl.value === 'tokens' ? 'tokens' : 'spend';
   const daily = summary.daily;
-  const W = 640, H = 200, pl = 20, pr = 16, pt = 12, pb = 26;
-  const iw = W - pl - pr, ih = H - pt - pb;
+  const W = 640;
+  const H = 200;
+  const pl = 20;
+  const pr = 16;
+  const pt = 12;
+  const pb = 26;
+  const iw = W - pl - pr;
+  const ih = H - pt - pb;
   const n = daily.length;
+  const baseY = pt + ih;
+  const baselineD = 'M ' + pl + ' ' + baseY + ' L ' + (pl + iw) + ' ' + baseY;
+
+  function pathD(top, bot) {
+    if (!top.length || top.length !== bot.length) return '';
+    var d = 'M ' + top[0].x.toFixed(2) + ' ' + top[0].y.toFixed(2);
+    for (var a = 1; a < top.length; a += 1) {
+      d += ' L ' + top[a].x.toFixed(2) + ' ' + top[a].y.toFixed(2);
+    }
+    for (var b = bot.length - 1; b >= 0; b -= 1) {
+      d += ' L ' + bot[b].x.toFixed(2) + ' ' + bot[b].y.toFixed(2);
+    }
+    return d + ' Z';
+  }
+
   if (n === 0) {
-    svg.innerHTML = '';
+    svg.innerHTML =
+      '<path fill="none" stroke="rgba(148,163,184,0.35)" stroke-width="1" d="' +
+      baselineD +
+      '" />' +
+      '<text x="' +
+      (pl + iw / 2) +
+      '" y="' +
+      (pt + ih / 2) +
+      '" fill="#8b96ad" font-size="12" text-anchor="middle">No data in range</text>';
     return;
   }
-  let max = 0;
-  let cumTok = 0;
+
+  var max = 0;
+  var cumTok = 0;
   if (metric === 'spend') {
-    for (var i = 0; i < n; i++) {
+    for (var i = 0; i < n; i += 1) {
       max = Math.max(max, daily[i].cumulativeTotalUsd || 0);
     }
   } else {
-    for (var j = 0; j < n; j++) {
+    for (var j = 0; j < n; j += 1) {
       cumTok += daily[j].tokens || 0;
       max = Math.max(max, cumTok);
     }
   }
-  if (max <= 0) max = 1;
-  function ys(v) { return pt + ih - (v / max) * ih; }
-  function xAt(idx) { return pl + (n <= 1 ? iw / 2 : (idx / (n - 1)) * iw); }
-  cumTok = 0;
+  var denom = max > 0 ? max : 1;
+  function ys(v) {
+    return pt + ih - (v / denom) * ih;
+  }
+
   var basePts = [];
   var lowPts = [];
   var highPts = [];
-  for (var k = 0; k < n; k++) {
-    var x = xAt(k);
-    basePts.push({ x: x, y: ys(0) });
+  cumTok = 0;
+
+  if (n === 1) {
+    var x0 = pl + iw * 0.06;
+    var x1 = pl + iw * 0.94;
+    basePts.push({ x: x0, y: ys(0) }, { x: x1, y: ys(0) });
     if (metric === 'spend') {
-      lowPts.push({ x: x, y: ys(daily[k].cumulativeReportedUsd || 0) });
-      highPts.push({ x: x, y: ys(daily[k].cumulativeTotalUsd || 0) });
+      var yr = ys(daily[0].cumulativeReportedUsd || 0);
+      var yt = ys(daily[0].cumulativeTotalUsd || 0);
+      lowPts.push({ x: x0, y: yr }, { x: x1, y: yr });
+      highPts.push({ x: x0, y: yt }, { x: x1, y: yt });
     } else {
-      cumTok += daily[k].tokens || 0;
-      lowPts.push({ x: x, y: ys(0) });
-      highPts.push({ x: x, y: ys(cumTok) });
+      var tok = daily[0].tokens || 0;
+      var yt2 = ys(tok);
+      lowPts.push({ x: x0, y: ys(0) }, { x: x1, y: ys(0) });
+      highPts.push({ x: x0, y: yt2 }, { x: x1, y: yt2 });
+    }
+  } else {
+    for (var k = 0; k < n; k += 1) {
+      var x = pl + (k / (n - 1)) * iw;
+      basePts.push({ x: x, y: ys(0) });
+      if (metric === 'spend') {
+        lowPts.push({ x: x, y: ys(daily[k].cumulativeReportedUsd || 0) });
+        highPts.push({ x: x, y: ys(daily[k].cumulativeTotalUsd || 0) });
+      } else {
+        cumTok += daily[k].tokens || 0;
+        lowPts.push({ x: x, y: ys(0) });
+        highPts.push({ x: x, y: ys(cumTok) });
+      }
     }
   }
-  function pathD(top, bot) {
-    var d = 'M ' + top[0].x.toFixed(1) + ' ' + top[0].y.toFixed(1);
-    for (var a = 1; a < top.length; a++) d += ' L ' + top[a].x.toFixed(1) + ' ' + top[a].y.toFixed(1);
-    for (var b = bot.length - 1; b >= 0; b--) d += ' L ' + bot[b].x.toFixed(1) + ' ' + bot[b].y.toFixed(1);
-    return d + ' Z';
-  }
-  var fillRep = metric === 'spend' ? 'rgba(59,130,246,0.35)' : 'rgba(59,130,246,0.25)';
-  var fillEst = metric === 'spend' ? 'rgba(96,165,250,0.28)' : 'rgba(96,165,250,0.15)';
+
+  var fillRep = metric === 'spend' ? 'rgba(59,130,246,0.42)' : 'rgba(59,130,246,0.32)';
+  var fillEst = metric === 'spend' ? 'rgba(96,165,250,0.35)' : 'rgba(96,165,250,0.22)';
+  var strokeTop = 'rgba(147,197,253,0.85)';
   var d1 = metric === 'spend' ? pathD(lowPts, basePts) : '';
   var d2 = pathD(highPts, metric === 'spend' ? lowPts : basePts);
-  var svgInner;
-  if (metric === 'spend') {
-    svgInner =
-      '<path fill="' + fillEst + '" d="' + d2 + '" />' +
-      (d1 ? '<path fill="' + fillRep + '" d="' + d1 + '" />' : '');
-  } else {
-    svgInner = '<path fill="' + fillRep + '" d="' + d2 + '" />';
+
+  var parts = [
+    '<path fill="none" stroke="rgba(148,163,184,0.4)" stroke-width="1" d="' + baselineD + '" />',
+  ];
+  if (metric === 'spend' && d2) {
+    parts.push(
+      '<path fill="' +
+        fillEst +
+        '" stroke="' +
+        strokeTop +
+        '" stroke-width="0.75" d="' +
+        d2 +
+        '" />',
+    );
   }
-  svg.innerHTML = svgInner;
+  if (metric === 'spend' && d1) {
+    parts.push(
+      '<path fill="' +
+        fillRep +
+        '" stroke="' +
+        strokeTop +
+        '" stroke-width="0.75" d="' +
+        d1 +
+        '" />',
+    );
+  }
+  if (metric !== 'spend' && d2) {
+    parts.push(
+      '<path fill="' +
+        fillRep +
+        '" stroke="' +
+        strokeTop +
+        '" stroke-width="0.75" d="' +
+        d2 +
+        '" />',
+    );
+  }
+  if (max <= 0 && n > 0) {
+    parts.push(
+      '<text x="' +
+        (pl + iw / 2) +
+        '" y="' +
+        (pt + ih / 2) +
+        '" fill="#8b96ad" font-size="12" text-anchor="middle">No usage in this range</text>',
+    );
+  }
+  svg.innerHTML = parts.join('');
 }
 
 function fmtMoney(n) {

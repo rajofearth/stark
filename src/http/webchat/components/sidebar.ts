@@ -38,12 +38,7 @@ export function renderSidebar(): string {
 
     <div class="nav-section">
       ${navItem("inbox", SVG.inbox, "Inbox", "badge-inbox")}
-      ${navItem("agents", SVG.agents, "Agents", "badge-agents")}
-      ${navItem("wflow", SVG.wflow, "Workflows")}
-      ${navItem("tools", SVG.tools, "Tools")}
-      ${navItem("apikeys", SVG.key, "API Keys")}
       ${navItem("billing", SVG.card, "Billing")}
-      ${navItem("notifs", SVG.bell, "Notifications", "badge-notif")}
     </div>
 
     <div class="sidebar-label">Conversations</div>
