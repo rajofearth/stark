@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import type { Settings } from "../types.js";
+import type { ModelPricingBand, Settings } from "../types.js";
+import { publishedModelPricingDefaults } from "./publishedModelPricing.js";
 import { normalizeLinearOrchestration } from "../workflow/linearOrchestration.js";
 
 const stringArray = z.array(z.string());
@@ -110,6 +112,22 @@ const rawConfigSchema = z
       })
       .passthrough()
       .optional(),
+    webchat: z
+      .object({
+        usage_ledger_path: z.string().optional(),
+        default_model: z.string().nullable().optional(),
+        model_pricing: z
+          .record(
+            z.string(),
+            z.object({
+              input_per_million_usd: z.number().nonnegative(),
+              output_per_million_usd: z.number().nonnegative(),
+            }),
+          )
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -121,6 +139,107 @@ export class ConfigError extends Error {
   ) {
     super(message);
   }
+}
+
+function normalizeModelPricingBand(raw: unknown): ModelPricingBand | null {
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Record<string, unknown>;
+  const inp =
+    typeof b.input_per_million_usd === "number"
+      ? b.input_per_million_usd
+      : typeof b.inputPerMillionUsd === "number"
+        ? b.inputPerMillionUsd
+        : NaN;
+  const out =
+    typeof b.output_per_million_usd === "number"
+      ? b.output_per_million_usd
+      : typeof b.outputPerMillionUsd === "number"
+        ? b.outputPerMillionUsd
+        : NaN;
+  if (!Number.isFinite(inp) || !Number.isFinite(out)) return null;
+  return { inputPerMillionUsd: inp, outputPerMillionUsd: out };
+}
+
+function mergeModelPricingRecord(
+  target: Record<string, ModelPricingBand>,
+  source: Record<string, unknown>,
+): void {
+  for (const [modelId, band] of Object.entries(source)) {
+    if (!modelId.trim()) continue;
+    const normalized = normalizeModelPricingBand(band);
+    if (normalized) target[modelId.trim()] = normalized;
+  }
+}
+
+/** Webchat billing defaults use `workspace.root`, not the workflow file path. Optional YAML/env extend. */
+function resolveWebchatModelPricing(
+  yamlPricing: Record<string, unknown> | undefined,
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv,
+): Record<string, ModelPricingBand> {
+  const modelPricing: Record<string, ModelPricingBand> = publishedModelPricingDefaults();
+
+  if (yamlPricing && typeof yamlPricing === "object") {
+    mergeModelPricingRecord(modelPricing, yamlPricing as Record<string, unknown>);
+  }
+
+  const fileSpec = env.STARK_WEBCHAT_MODEL_PRICING_FILE?.trim();
+  if (fileSpec) {
+    const pricingPath = isAbsolute(fileSpec) ? fileSpec : resolve(workspaceRoot, fileSpec);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(pricingPath, "utf8")) as unknown;
+    } catch (detail) {
+      throw new ConfigError(
+        "invalid_webchat_pricing_file",
+        `Cannot read JSON from STARK_WEBCHAT_MODEL_PRICING_FILE (${pricingPath})`,
+        detail,
+      );
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw new ConfigError(
+        "invalid_webchat_pricing_file",
+        `STARK_WEBCHAT_MODEL_PRICING_FILE must be a JSON object (${pricingPath})`,
+        parsed,
+      );
+    }
+    mergeModelPricingRecord(modelPricing, parsed as Record<string, unknown>);
+  }
+
+  const jsonStr = env.STARK_WEBCHAT_MODEL_PRICING_JSON?.trim();
+  if (jsonStr) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonStr) as unknown;
+    } catch (detail) {
+      throw new ConfigError(
+        "invalid_webchat_pricing_json",
+        "STARK_WEBCHAT_MODEL_PRICING_JSON must be valid JSON",
+        detail,
+      );
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw new ConfigError(
+        "invalid_webchat_pricing_json",
+        "STARK_WEBCHAT_MODEL_PRICING_JSON must be a JSON object",
+        parsed,
+      );
+    }
+    mergeModelPricingRecord(modelPricing, parsed as Record<string, unknown>);
+  }
+
+  return modelPricing;
+}
+
+function resolveWebchatUsageLedgerPath(
+  yamlLedgerPath: string | undefined,
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const fromEnv = env.STARK_WEBCHAT_USAGE_LEDGER?.trim() || env.STARK_USAGE_LEDGER_PATH?.trim();
+  const pathSpec = fromEnv || yamlLedgerPath?.trim() || join(".stark", "usage-events.jsonl");
+  if (isAbsolute(pathSpec)) return resolve(pathSpec);
+  return resolve(workspaceRoot, pathSpec);
 }
 
 export function parseSettings(
@@ -146,6 +265,32 @@ export function parseSettings(
   const server = config.server ?? {};
   const slack = config.slack ?? {};
   const github = config.github ?? {};
+  const webchat = config.webchat ?? {};
+
+  const workspaceRoot = resolveWorkspaceRoot(
+    workspace.root ?? resolve(tmpdir(), "symphony_workspaces"),
+    workflowPath,
+    env,
+  );
+
+  const usageLedgerPath = resolveWebchatUsageLedgerPath(
+    typeof webchat.usage_ledger_path === "string" ? webchat.usage_ledger_path : undefined,
+    workspaceRoot,
+    env,
+  );
+
+  const modelPricing = resolveWebchatModelPricing(
+    webchat.model_pricing as Record<string, unknown> | undefined,
+    workspaceRoot,
+    env,
+  );
+
+  const defaultModel =
+    env.STARK_WEBCHAT_DEFAULT_MODEL?.trim() ||
+    (typeof webchat.default_model === "string" && webchat.default_model.trim()
+      ? webchat.default_model.trim()
+      : "") ||
+    "gpt-4o";
 
   const settings: Settings = {
     tracker: {
@@ -166,11 +311,7 @@ export function parseSettings(
     },
     polling: { intervalMs: polling.interval_ms ?? 30_000 },
     workspace: {
-      root: resolveWorkspaceRoot(
-        workspace.root ?? resolve(tmpdir(), "symphony_workspaces"),
-        workflowPath,
-        env,
-      ),
+      root: workspaceRoot,
     },
     worker: {
       sshHosts: (worker.ssh_hosts ?? []).map((host) => host.trim()).filter(Boolean),
@@ -240,6 +381,11 @@ export function parseSettings(
         env,
       ),
       prTimeoutMs: github.pr_timeout_ms ?? 120_000,
+    },
+    webchat: {
+      usageLedgerPath,
+      modelPricing,
+      defaultModel,
     },
   };
 

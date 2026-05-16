@@ -1,5 +1,7 @@
 /* ── Chat area component ────────────────────────────────────────────────── */
 
+import { renderBillingPanel } from "./billing.js";
+
 const SVG = {
   edit:  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
   share: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
@@ -24,6 +26,7 @@ const CHIPS: Chip[] = [
 export function renderChatArea(): string {
   return `
 <main id="main">
+<div id="view-chat" class="view-panel">
 
   <!-- Header -->
   <div id="chat-header">
@@ -90,5 +93,7 @@ export function renderChatArea(): string {
     </div>
   </div>
 
+</div>
+${renderBillingPanel()}
 </main>`;
 }

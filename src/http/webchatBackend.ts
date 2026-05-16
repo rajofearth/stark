@@ -11,6 +11,18 @@ import type { CodexAppServer, CodexSession } from "../codex/appServer.js";
 import type { Logger } from "../logging/logger.js";
 import { ensureInsideRoot } from "../pathSafety.js";
 import type { RuntimeEvent, Settings } from "../types.js";
+import {
+  sendBillingCsv,
+  sendBillingEvents,
+  sendBillingSummary,
+} from "./webchatBilling.js";
+import {
+  computeUsageDelta,
+  mergeSnapshots,
+  type ThreadStatsSnapshot,
+  UsageLedger,
+  usageRowDedupeKey,
+} from "./usageLedger.js";
 
 interface WebchatConversation {
   id: string;
@@ -39,11 +51,16 @@ interface ActiveConversation extends WebchatConversation {
 
 export class WebchatBackend {
   private readonly conversations = new Map<string, ActiveConversation>();
+  /** Last merged raw stats object per thread (from Codex payloads). */
+  private readonly latestStatsRaw = new Map<string, Record<string, unknown>>();
+  /** Last known cumulative token/cost snapshot per thread — used for delta ledger rows. */
+  private readonly threadStatsSnapshots = new Map<string, ThreadStatsSnapshot>();
 
   constructor(
     private readonly codex: CodexAppServer,
     private readonly settingsProvider: () => Settings,
     private readonly logger: Logger,
+    private readonly _workflowPath: string,
   ) {}
 
   registerRoutes(app: Express): void {
@@ -94,6 +111,20 @@ export class WebchatBackend {
           : await this.startConversation(title);
         const assistantText = await this.runTurn(conv, text, (event) => {
           this.logger.debug("webchat_http_event", { event: event.event, threadId: conv.threadId });
+          const stats = extractChatStats(event.payload);
+          if (stats) {
+            const merged = Object.assign(
+              {},
+              this.latestStatsRaw.get(conv.threadId) ?? {},
+              statsWithRuntimeIds(stats, event),
+            );
+            this.latestStatsRaw.set(conv.threadId, merged);
+            void this.persistUsageDelta(conv, merged, event).catch((reason) => {
+              this.logger.debug("webchat_usage_ledger_append_failed", {
+                error: reason instanceof Error ? reason.message : String(reason),
+              });
+            });
+          }
         });
         response.json({ conversation: publicConversation(conv), content: assistantText });
       });
@@ -121,6 +152,50 @@ export class WebchatBackend {
         }
         await openInFileBrowser(safePath);
         response.type("html").send(renderOpenedFilePage(safePath));
+      });
+    });
+
+    app.get("/api/webchat/billing/summary", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const ledger = new UsageLedger(this.settingsProvider().webchat.usageLedgerPath);
+        await sendBillingSummary(
+          ledger,
+          this.settingsProvider(),
+          typeof request.query.from === "string" ? request.query.from : undefined,
+          typeof request.query.to === "string" ? request.query.to : undefined,
+          webchatBillingModelFilter(request.query.model),
+          response,
+        );
+      });
+    });
+
+    app.get("/api/webchat/billing/events", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const ledger = new UsageLedger(this.settingsProvider().webchat.usageLedgerPath);
+        await sendBillingEvents(
+          ledger,
+          this.settingsProvider(),
+          typeof request.query.from === "string" ? request.query.from : undefined,
+          typeof request.query.to === "string" ? request.query.to : undefined,
+          typeof request.query.page === "string" ? request.query.page : undefined,
+          typeof request.query.pageSize === "string" ? request.query.pageSize : undefined,
+          webchatBillingModelFilter(request.query.model),
+          response,
+        );
+      });
+    });
+
+    app.get("/api/webchat/billing/export.csv", async (request, response) => {
+      await this.handleHttp(response, async () => {
+        const ledger = new UsageLedger(this.settingsProvider().webchat.usageLedgerPath);
+        await sendBillingCsv(
+          ledger,
+          this.settingsProvider(),
+          typeof request.query.from === "string" ? request.query.from : undefined,
+          typeof request.query.to === "string" ? request.query.to : undefined,
+          webchatBillingModelFilter(request.query.model),
+          response,
+        );
       });
     });
   }
@@ -171,6 +246,8 @@ export class WebchatBackend {
       this.codex.stopSession(conv.session);
     }
     this.conversations.clear();
+    this.latestStatsRaw.clear();
+    this.threadStatsSnapshots.clear();
   }
 
   private async handleWsMessage(ws: SimpleWebSocket, raw: string): Promise<void> {
@@ -218,7 +295,8 @@ export class WebchatBackend {
           : await this.startConversation(title);
         ws.send({ event: "message.started", conversation: publicConversation(conv) });
         let streamedText = "";
-        let latestStats: Record<string, unknown> = {};
+        let latestStats: Record<string, unknown> =
+          this.latestStatsRaw.get(conv.threadId) ?? {};
         const fullText = await this.runTurn(conv, text, (event) => {
           const webEvent = runtimeEventForWebchat(event);
           if (webEvent) ws.send({ threadId: conv.threadId, turnId: event.turnId, ...webEvent });
@@ -227,7 +305,13 @@ export class WebchatBackend {
           const stats = extractChatStats(event.payload);
           if (stats) {
             latestStats = Object.assign({}, latestStats, statsWithRuntimeIds(stats, event));
+            this.latestStatsRaw.set(conv.threadId, latestStats);
             ws.send({ event: "stats.update", stats: latestStats, threadId: conv.threadId });
+            void this.persistUsageDelta(conv, latestStats, event).catch((reason) => {
+              this.logger.debug("webchat_usage_ledger_append_failed", {
+                error: reason instanceof Error ? reason.message : String(reason),
+              });
+            });
           }
           for (const file of extractFileUpdates(event.payload)) {
             ws.send({ event: "file.update", file, threadId: conv.threadId });
@@ -269,7 +353,65 @@ export class WebchatBackend {
     conv.updatedAt = new Date().toISOString();
     this.codex.stopSession(conv.session);
     this.conversations.delete(threadId);
+    this.latestStatsRaw.delete(threadId);
+    this.threadStatsSnapshots.delete(threadId);
     return publicConversation(conv);
+  }
+
+  private async persistUsageDelta(
+    conv: ActiveConversation,
+    merged: Record<string, unknown>,
+    event: RuntimeEvent,
+  ): Promise<void> {
+    const threadId = conv.threadId;
+    const prev = this.threadStatsSnapshots.get(threadId);
+    const nextSnap = mergeSnapshots(prev, merged);
+    const delta = computeUsageDelta(prev, {
+      inputTokens: nextSnap.inputTokens,
+      outputTokens: nextSnap.outputTokens,
+      totalTokens: nextSnap.totalTokens,
+      costUsd: nextSnap.costUsd ?? undefined,
+    });
+    this.threadStatsSnapshots.set(threadId, nextSnap);
+    if (!delta) return;
+    const active =
+      delta.inputDelta > 0 ||
+      delta.outputDelta > 0 ||
+      delta.totalDelta > 0 ||
+      (delta.costUsdDelta !== null && delta.costUsdDelta > 0);
+    if (!active) return;
+
+    const model =
+      typeof merged.model === "string" && merged.model.trim()
+        ? merged.model.trim()
+        : this.settingsProvider().webchat.defaultModel;
+
+    const turnId =
+      typeof merged.turnId === "string"
+        ? merged.turnId
+        : event.turnId != null
+          ? String(event.turnId)
+          : null;
+
+    const ledger = new UsageLedger(this.settingsProvider().webchat.usageLedgerPath);
+    await ledger.append({
+      id: usageRowDedupeKey({
+        threadId,
+        turnId,
+        inputDelta: delta.inputDelta,
+        outputDelta: delta.outputDelta,
+        totalDelta: delta.totalDelta,
+        costUsdReportedDelta: delta.costUsdDelta,
+      }),
+      threadId,
+      turnId,
+      conversationTitle: conv.title,
+      model,
+      inputDelta: delta.inputDelta,
+      outputDelta: delta.outputDelta,
+      totalDelta: delta.totalDelta,
+      costUsdReportedDelta: delta.costUsdDelta,
+    });
   }
 
   private async startConversation(title: string): Promise<ActiveConversation> {
@@ -1528,6 +1670,10 @@ function firstString(...values: unknown[]): string {
     if (typeof value === "string" && value) return value;
   }
   return "";
+}
+
+function webchatBillingModelFilter(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function stringOrDefault(value: unknown, fallback: string): string {

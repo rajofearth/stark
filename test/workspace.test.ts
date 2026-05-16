@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { Logger } from "../src/logging/logger.js";
 import { sanitizeWorkspaceKey } from "../src/pathSafety.js";
 import type { Settings } from "../src/types.js";
+import { publishedModelPricingDefaults } from "../src/config/publishedModelPricing.js";
 import { DEFAULT_LINEAR_ORCHESTRATION } from "../src/workflow/linearOrchestration.js";
 import { WorkspaceManager } from "../src/workspace/workspace.js";
 
@@ -82,5 +83,10 @@ function baseSettings(root: string): Settings {
       requireApprovalFor: ["artifact_upload", "github_pr", "new_project"],
     },
     github: { enabled: false, allowedRepoRoots: [], prTimeoutMs: 120_000 },
+    webchat: {
+      usageLedgerPath: join(root, ".stark", "usage-events.jsonl"),
+      modelPricing: publishedModelPricingDefaults(),
+      defaultModel: "gpt-4o",
+    },
   };
 }

@@ -67,6 +67,20 @@ export interface LinearOrchestrationSettings {
 
 export type TaskKind = "linear" | "adhoc";
 
+/** USD per 1M tokens for usage billing estimates */
+export interface ModelPricingBand {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+}
+
+export interface WebchatSettings {
+  /** Resolved absolute path to JSONL usage ledger */
+  usageLedgerPath: string;
+  modelPricing: Record<string, ModelPricingBand>;
+  /** Fallback model id for cost estimate when Codex omits model (defaults to gpt-4o). */
+  defaultModel: string;
+}
+
 export interface Settings {
   tracker: TrackerConfig;
   polling: { intervalMs: number };
@@ -117,6 +131,7 @@ export interface Settings {
     allowedRepoRoots: string[];
     prTimeoutMs: number;
   };
+  webchat: WebchatSettings;
 }
 
 export interface RuntimeEvent {

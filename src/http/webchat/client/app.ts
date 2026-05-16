@@ -727,13 +727,321 @@ function convUpdatedMs(conv) {
   return Date.parse(value || '') || 0;
 }
 
+/* ─── Billing view ─────────────────────────────────────────────────────── */
+const Billing = { from: '', to: '', preset: '30d', page: 1, modelFilter: '', lastSummary: null };
+
+function fmtYMD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+function applyBillingPreset(preset) {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let start = new Date(end);
+  if (preset === '1d') { /* same day */ }
+  else if (preset === '7d') start.setDate(start.getDate() - 6);
+  else if (preset === '30d') start.setDate(start.getDate() - 29);
+  else if (preset === 'mtd') start = new Date(now.getFullYear(), now.getMonth(), 1);
+  else if (preset === 'lastmonth') {
+    start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const last = new Date(now.getFullYear(), now.getMonth(), 0);
+    Billing.from = fmtYMD(start);
+    Billing.to = fmtYMD(last);
+    Billing.preset = preset;
+    return;
+  }
+  Billing.from = fmtYMD(start);
+  Billing.to = fmtYMD(end);
+  Billing.preset = preset;
+}
+
+function showMainView(which) {
+  const chat = document.getElementById('view-chat');
+  const bill = document.getElementById('view-billing');
+  if (!chat || !bill) return;
+  if (which === 'billing') {
+    chat.classList.add('view-hidden');
+    chat.setAttribute('aria-hidden', 'true');
+    bill.classList.remove('view-hidden');
+    bill.setAttribute('aria-hidden', 'false');
+  } else {
+    bill.classList.add('view-hidden');
+    bill.setAttribute('aria-hidden', 'true');
+    chat.classList.remove('view-hidden');
+    chat.setAttribute('aria-hidden', 'false');
+  }
+}
+
+function billingQuery() {
+  const q = '?from=' + encodeURIComponent(Billing.from) + '&to=' + encodeURIComponent(Billing.to);
+  const m = Billing.modelFilter ? '&model=' + encodeURIComponent(Billing.modelFilter) : '';
+  return q + m;
+}
+
+function populateBillingModelSelect(allModels) {
+  const sel = document.getElementById('billing-group-model');
+  if (!sel) return;
+  const cur = Billing.modelFilter;
+  const opts = ['<option value="">All models</option>'].concat(
+    (allModels || []).map(function (id) {
+      return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>';
+    }),
+  );
+  sel.innerHTML = opts.join('');
+  sel.value = cur;
+}
+
+function drawBillingChart(summary) {
+  const svg = document.getElementById('billing-chart');
+  if (!svg || !summary || !summary.daily) return;
+  const metricEl = document.getElementById('billing-metric');
+  const metric = metricEl && metricEl.value === 'tokens' ? 'tokens' : 'spend';
+  const daily = summary.daily;
+  const W = 640, H = 200, pl = 20, pr = 16, pt = 12, pb = 26;
+  const iw = W - pl - pr, ih = H - pt - pb;
+  const n = daily.length;
+  if (n === 0) {
+    svg.innerHTML = '';
+    return;
+  }
+  let max = 0;
+  let cumTok = 0;
+  if (metric === 'spend') {
+    for (var i = 0; i < n; i++) {
+      max = Math.max(max, daily[i].cumulativeTotalUsd || 0);
+    }
+  } else {
+    for (var j = 0; j < n; j++) {
+      cumTok += daily[j].tokens || 0;
+      max = Math.max(max, cumTok);
+    }
+  }
+  if (max <= 0) max = 1;
+  function ys(v) { return pt + ih - (v / max) * ih; }
+  function xAt(idx) { return pl + (n <= 1 ? iw / 2 : (idx / (n - 1)) * iw); }
+  cumTok = 0;
+  var basePts = [];
+  var lowPts = [];
+  var highPts = [];
+  for (var k = 0; k < n; k++) {
+    var x = xAt(k);
+    basePts.push({ x: x, y: ys(0) });
+    if (metric === 'spend') {
+      lowPts.push({ x: x, y: ys(daily[k].cumulativeReportedUsd || 0) });
+      highPts.push({ x: x, y: ys(daily[k].cumulativeTotalUsd || 0) });
+    } else {
+      cumTok += daily[k].tokens || 0;
+      lowPts.push({ x: x, y: ys(0) });
+      highPts.push({ x: x, y: ys(cumTok) });
+    }
+  }
+  function pathD(top, bot) {
+    var d = 'M ' + top[0].x.toFixed(1) + ' ' + top[0].y.toFixed(1);
+    for (var a = 1; a < top.length; a++) d += ' L ' + top[a].x.toFixed(1) + ' ' + top[a].y.toFixed(1);
+    for (var b = bot.length - 1; b >= 0; b--) d += ' L ' + bot[b].x.toFixed(1) + ' ' + bot[b].y.toFixed(1);
+    return d + ' Z';
+  }
+  var fillRep = metric === 'spend' ? 'rgba(59,130,246,0.35)' : 'rgba(59,130,246,0.25)';
+  var fillEst = metric === 'spend' ? 'rgba(96,165,250,0.28)' : 'rgba(96,165,250,0.15)';
+  var d1 = metric === 'spend' ? pathD(lowPts, basePts) : '';
+  var d2 = pathD(highPts, metric === 'spend' ? lowPts : basePts);
+  var svgInner;
+  if (metric === 'spend') {
+    svgInner =
+      '<path fill="' + fillEst + '" d="' + d2 + '" />' +
+      (d1 ? '<path fill="' + fillRep + '" d="' + d1 + '" />' : '');
+  } else {
+    svgInner = '<path fill="' + fillRep + '" d="' + d2 + '" />';
+  }
+  svg.innerHTML = svgInner;
+}
+
+function fmtMoney(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return '—';
+  return 'US$' + n.toFixed(2);
+}
+
+function fmtTokens(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+}
+
+async function refreshBilling() {
+  var label = document.getElementById('billing-range-label');
+  if (label) label.textContent = Billing.from + ' – ' + Billing.to;
+  try {
+    var res = await fetch('/api/webchat/billing/summary' + billingQuery());
+    if (!res.ok) throw new Error('summary');
+    var summary = await res.json();
+    Billing.lastSummary = summary;
+    populateBillingModelSelect(summary.allModels || []);
+    document.getElementById('bill-m-total').textContent = fmtMoney(summary.totalSpendUsd);
+    var sub = document.getElementById('bill-m-total-sub');
+    if (sub) {
+      sub.textContent =
+        'Reported ' +
+        fmtMoney(summary.totalReportedUsd) +
+        ' · Est. ' +
+        fmtMoney(summary.totalEstimatedUsd);
+    }
+    document.getElementById('bill-m-tokens').textContent = fmtTokens(summary.totalTokens);
+    document.getElementById('bill-m-events').textContent = String(summary.eventCount || 0);
+    drawBillingChart(summary);
+    var exp = document.getElementById('billing-export-btn');
+    if (exp) exp.href = '/api/webchat/billing/export.csv' + billingQuery();
+  } catch (e) {
+    toast('Billing summary failed');
+  }
+  await refreshBillingEvents();
+}
+
+async function refreshBillingEvents() {
+  var tbody = document.getElementById('billing-tbody');
+  var info = document.getElementById('billing-pager-info');
+  var btns = document.getElementById('billing-pager-btns');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" style="color:var(--t-m)">Loading…</td></tr>';
+  try {
+    var url =
+      '/api/webchat/billing/events' +
+      billingQuery() +
+      '&page=' +
+      encodeURIComponent(String(Billing.page)) +
+      '&pageSize=20';
+    var res = await fetch(url);
+    if (!res.ok) throw new Error('events');
+    var data = await res.json();
+    var events = data.events || [];
+    if (events.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--t-m)">No usage in this range yet.</td></tr>';
+    } else {
+      tbody.innerHTML = events
+        .map(function (ev) {
+          var dt = new Date(ev.recordedAt);
+          var dateStr = isNaN(dt.getTime()) ? esc(ev.recordedAt) : dt.toLocaleString();
+          var typ = ev.type === 'reported' ? 'reported' : ev.type === 'estimated' ? 'estimated' : '—';
+          var pillClass = typ === 'reported' ? 'billing-pill reported' : typ === 'estimated' ? 'billing-pill estimated' : 'billing-pill';
+          var cost =
+            ev.costUsdReported != null
+              ? fmtMoney(ev.costUsdReported)
+              : ev.costUsdEstimated != null
+                ? fmtMoney(ev.costUsdEstimated)
+                : '—';
+          return (
+            '<tr><td>' +
+            esc(dateStr) +
+            '</td><td><span class="' +
+            pillClass +
+            '">' +
+            esc(typ) +
+            '</span></td><td>' +
+            esc(ev.model || '') +
+            '</td><td>' +
+            esc(ev.description || '') +
+            '</td><td class="num">' +
+            esc(String(ev.tokens != null ? ev.tokens : '')) +
+            '</td><td class="num">' +
+            esc(cost) +
+            '</td></tr>'
+          );
+        })
+        .join('');
+    }
+    var total = data.total || 0;
+    var page = data.page || 1;
+    var ps = data.pageSize || 20;
+    var last = Math.max(1, Math.ceil(total / ps));
+    if (info) {
+      info.textContent =
+        total === 0
+          ? 'No records'
+          : 'Showing ' + (total === 0 ? 0 : (page - 1) * ps + 1) + '–' + Math.min(page * ps, total) + ' of ' + total;
+    }
+    if (btns) {
+      var pages = [];
+      var win = 5;
+      var start = Math.max(1, page - 2);
+      var end = Math.min(last, start + win - 1);
+      if (end - start < win - 1) start = Math.max(1, end - win + 1);
+      for (var p = start; p <= end; p++) pages.push(p);
+      btns.innerHTML = pages
+        .map(function (p) {
+          return (
+            '<button type="button" class="billing-page-btn' +
+            (p === page ? ' active' : '') +
+            '" data-page="' +
+            p +
+            '">' +
+            p +
+            '</button>'
+          );
+        })
+        .join('');
+      btns.querySelectorAll('[data-page]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          Billing.page = Number(btn.getAttribute('data-page')) || 1;
+          refreshBillingEvents();
+        });
+      });
+    }
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--t-m)">Failed to load events</td></tr>';
+  }
+}
+
+function bindBillingUi() {
+  document.querySelectorAll('#billing-chips .billing-chip').forEach(function (el) {
+    el.addEventListener('click', function () {
+      document.querySelectorAll('#billing-chips .billing-chip').forEach(function (c) {
+        c.classList.remove('active');
+      });
+      el.classList.add('active');
+      Billing.preset = el.getAttribute('data-preset') || '30d';
+      applyBillingPreset(Billing.preset);
+      Billing.page = 1;
+      refreshBilling();
+    });
+  });
+  var selModel = document.getElementById('billing-group-model');
+  if (selModel)
+    selModel.addEventListener('change', function () {
+      Billing.modelFilter = selModel.value || '';
+      Billing.page = 1;
+      refreshBilling();
+    });
+  var selMetric = document.getElementById('billing-metric');
+  if (selMetric)
+    selMetric.addEventListener('change', function () {
+      drawBillingChart(Billing.lastSummary);
+    });
+  var refBtn = document.getElementById('billing-refresh-btn');
+  if (refBtn)
+    refBtn.addEventListener('click', function () {
+      refreshBilling();
+    });
+}
+
 /* ─── Event binding ─────────────────────────────────────────────────────── */
 function bindEvents() {
   document.querySelectorAll('.rpanel-tab').forEach(el => el.addEventListener('click', () => switchTab(el.dataset.tab)));
   document.querySelectorAll('.nav-item').forEach(el => el.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     el.classList.add('active');
-    if (el.dataset.nav === 'agents') switchTab('agents');
+    const nav = el.dataset.nav;
+    if (nav === 'billing') {
+      showMainView('billing');
+      applyBillingPreset(Billing.preset);
+      Billing.page = 1;
+      void refreshBilling();
+      return;
+    }
+    showMainView('chat');
+    if (nav === 'agents') switchTab('agents');
   }));
   document.getElementById('new-conv-btn').addEventListener('click', newConv);
   document.getElementById('share-btn').addEventListener('click', () => {
@@ -784,6 +1092,8 @@ function doSend() {
 /* ─── Init ──────────────────────────────────────────────────────────────── */
 async function init() {
   bindEvents();
+  bindBillingUi();
+  applyBillingPreset('30d');
   applySnapshot(window.__STARK_STATE__ || {});
   connectWS();
   await loadInitialConversations();

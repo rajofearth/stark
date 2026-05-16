@@ -20,8 +20,9 @@ export class HttpServer {
     private readonly logger: Logger,
     private readonly port: number,
     private readonly host = "127.0.0.1",
+    private readonly workflowPath: string,
   ) {
-    this.webchatBackend = new WebchatBackend(codex, settingsProvider, logger);
+    this.webchatBackend = new WebchatBackend(codex, settingsProvider, logger, workflowPath);
   }
 
   async start(): Promise<number> {

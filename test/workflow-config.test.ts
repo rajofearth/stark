@@ -1,6 +1,6 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { parseSettings } from "../src/config/schema.js";
 import {
@@ -71,6 +71,41 @@ describe("workflow and config", () => {
       SLACK_SIGNING_SECRET: "secret",
     });
     expect(settings.slack.enabled).toBe(true);
+  });
+
+  test("webchat usage ledger defaults under workspace root (not the workflow file directory)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stark-ws-"));
+    const nested = join(dir, "nested");
+    const workflowPath = join(nested, "WORKFLOW.md");
+    const dataRoot = join(dir, "data");
+    await mkdir(nested, { recursive: true });
+    await writeFile(
+      workflowPath,
+      `---
+tracker:
+  kind: memory
+workspace:
+  root: ${JSON.stringify(dataRoot)}
+---
+P
+`,
+    );
+    const workflow = await loadWorkflow(workflowPath);
+    const settings = parseSettings(workflow.config, workflowPath);
+    expect(settings.webchat.usageLedgerPath).toBe(resolve(dataRoot, ".stark", "usage-events.jsonl"));
+  });
+
+  test("STARK_WEBCHAT_USAGE_LEDGER overrides ledger path", () => {
+    const settings = parseSettings(defaultWorkflow().config, "/tmp/any/WORKFLOW.md", {
+      STARK_WEBCHAT_USAGE_LEDGER: "/tmp/custom-usage.jsonl",
+    });
+    expect(settings.webchat.usageLedgerPath).toBe(resolve("/tmp/custom-usage.jsonl"));
+  });
+
+  test("embeds published vendor list prices without webchat YAML", () => {
+    const settings = parseSettings(defaultWorkflow().config, "/tmp/stark/WORKFLOW.md");
+    expect(settings.webchat.modelPricing["gpt-4o"]?.inputPerMillionUsd).toBe(2.5);
+    expect(settings.webchat.defaultModel).toBe("gpt-4o");
   });
 
   test("does not require approval for agent tasks by default", () => {

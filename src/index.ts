@@ -68,6 +68,7 @@ export class StarkRuntime {
         this.logger,
         port,
         settings.server.host,
+        this.options.workflowPath,
       );
       const boundPort = await this.httpServer.start();
       this.dashboardUrlValue = `http://${settings.server.host}:${boundPort}/`;
